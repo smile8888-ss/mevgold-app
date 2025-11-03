@@ -10,3 +10,7 @@ history_today.csv
 last_gold.json
 # macOS
 .DS_Store
+history_today.csv
+last_gold.json
+.env
+.streamlit/secrets.toml
