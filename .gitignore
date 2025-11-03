@@ -1,0 +1,12 @@
+# Python / Streamlit
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+# Data ที่เปลี่ยนตลอด
+history_today.csv
+last_gold.json
+# macOS
+.DS_Store
