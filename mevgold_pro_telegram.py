@@ -8,9 +8,13 @@
 
 import os, json, re, csv, requests
 from datetime import datetime
+st.write("✅ import base เสร็จแล้ว")
 import streamlit as st
+st.write("✅ เริ่มโหลดโค้ดแล้ว")
 from bs4 import BeautifulSoup
+st.write("✅ import BeautifulSoup ผ่านแล้ว")
 import pandas as pd
+st.write("✅ import pandas ผ่านแล้ว")
 
 # ------------------ CONFIG ------------------
 st.set_page_config(page_title="MeVGold — Thai Gold 96.5%", page_icon="🏆", layout="centered")
@@ -223,10 +227,12 @@ st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
 
 # ดึงข้อมูลจากสมาคม
+st.write("📡 กำลังโหลดราคาทองจากเว็บสมาคม...")
 try:
     cur = fetch_assoc()
+    st.write("✅ ดึงราคาทองสำเร็จ:", cur)
 except Exception as e:
-    st.error(f"❌ โหลดราคาจากสมาคมฯ ไม่สำเร็จ: {e}")
+    st.error(f"❌ โหลดราคาทองจากเว็บสมาคมล้มเหลว: {e}")
     st.stop()
 
 prev = load_state()  # state รอบก่อนหน้า (อาจว่างในครั้งแรก)
