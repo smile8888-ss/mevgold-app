@@ -78,18 +78,14 @@ html, body, .stApp{
 
 /* header – mobile */
 .header{
-  display:flex; flex-direction:column; align-items:flex-start; gap:8px;
+  display:flex; flex-direction:row; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:10px;
   padding:12px; border-bottom:1px solid var(--line);
   background:linear-gradient(180deg, rgba(248,224,138,.12), rgba(240,193,89,.08));
 }
-.header .left{display:flex; gap:8px; flex-wrap:wrap}
-.pill,.unit{
-  color:#0b0e12;font-weight:800;border-radius:999px;padding:6px 10px;
-  background:linear-gradient(92deg,#ffe39a,#f6c663);white-space:nowrap;
-  font-size:clamp(12px,3.5vw,13px);
-}
-.unit{background:linear-gradient(92deg,#f6c663,#ffe39a)}
-.status{align-self:flex-end}
+.header .left{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+.status{margin-left:auto; display:flex; align-items:center}
+
 .badge{
   display:inline-flex; align-items:center; gap:8px; font-weight:900;
   padding:6px 10px; border-radius:999px; font-size:clamp(13px,4vw,16px); line-height:1;
