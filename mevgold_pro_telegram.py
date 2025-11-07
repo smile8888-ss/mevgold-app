@@ -1,45 +1,25 @@
 # mevgold_pro_telegram.py — MeVGold 96.5% (stable + history seed + TG alert)
-# • Render ได้เสมอแม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
+# • Render ได้แม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
 # • Soft auto-refresh 60s
 # • Badge ▲/▼/คงที่
 # • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น
 # • HISTORY: seed แถวแรกของวัน + migrate schema
-# • หลัง 17:30 โชว์ป้าย “ปิดทำการแล้ว”
-# • ปรับปรุง: auto-install deps บน Cloud, ใช้ lxml เร็วขึ้น, กัน error ครบ
+# • เวลาไทย Asia/Bangkok และถ้ามี “เวลา ณ สมาคม” จะอ้างอิงเวลานั้นเป็นหลัก
 
-import os, json, re, csv, sys, subprocess
+import os, json, re, csv, requests
 from datetime import datetime
 from html import escape
-
-# --- safety auto-install for cloud cold start (เฉพาะครั้งแรกของ env ใหม่) ---
-def _ensure(pkgs):
-    try:
-        import importlib
-        for mod, pipname in pkgs:
-            try:
-                importlib.import_module(mod)
-            except Exception:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", pipname])
-    except Exception:
-        pass
-
-_ensure([
-    ("streamlit", "streamlit>=1.40.0"),
-    ("requests", "requests>=2.32.3"),
-    ("bs4", "beautifulsoup4>=4.12.3"),
-    ("lxml", "lxml>=5.3.0"),
-    ("pandas", "pandas>=2.2.3"),
-    ("html5lib", "html5lib>=1.1"),
-])
+from zoneinfo import ZoneInfo
 
 import streamlit as st
-import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 
 # ------------------ CONFIG ------------------
 st.set_page_config(page_title="MeVGold — Thai Gold 96.5%", page_icon="🏆", layout="centered")
 st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
+
+TZ = ZoneInfo("Asia/Bangkok")
 
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
@@ -49,6 +29,10 @@ FETCH_TIMEOUT = 20  # seconds
 # อ่าน secrets แบบปลอดภัย
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
+
+# Emojis สำหรับข้อความ Telegram
+UP_EMOJI = "🟢⬆️"     # ขึ้น = เขียว
+DOWN_EMOJI = "🔻⬇️"    # ลง  = แดง
 
 # ------------------ STYLES ------------------
 st.markdown("""
@@ -102,29 +86,32 @@ TH_DOW   = ["วันจันทร์","วันอังคาร","วั�
 TH_MONTH = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
 
 def th_now(dt: datetime) -> str:
+    # dt เป็น timezone-aware (Asia/Bangkok)
     return f"{TH_DOW[dt.weekday()]} {dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
 
 def is_market_closed(now: datetime) -> bool:
+    """สมาคมโดยทั่วไปอัปเดตราว 09:00–17:30 → หลัง 17:30 ถือว่าปิด"""
     return (now.hour > 17) or (now.hour == 17 and now.minute >= 30)
 
 def load_state():
     try:
-        if not os.path.exists(STATE_FILE): return {}
         with open(STATE_FILE,"r",encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {}
 
 def save_state(d:dict):
     try:
         with open(STATE_FILE,"w",encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False)
-    except Exception:
+    except:
         pass
 
+# schema ของ history
 STD_COLUMNS = ["date","time","times","buy_bar","sell_bar","buy_orn","sell_orn","d_buy","d_sell"]
 
 def migrate_history_file():
+    """ทำให้ history_today.csv เข้ารูปมาตรฐานเสมอ (เติมคอลัมน์ที่ขาดด้วยค่า 0/ว่าง)"""
     if not os.path.exists(HIST_FILE):
         with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
             csv.writer(f).writerow(STD_COLUMNS)
@@ -143,7 +130,7 @@ def migrate_history_file():
 
 def ensure_hist():
     migrate_history_file()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
         if df.empty or "date" not in df.columns or not (df["date"] == today).any():
@@ -158,58 +145,6 @@ def append_hist(row:dict):
     with open(HIST_FILE,"a",newline="",encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=STD_COLUMNS).writerow(row)
 
-# ------------------ FETCH ------------------
-def _num_from_text(el):
-    txt = el.get_text(strip=True) if el else ""
-    if not txt: return None
-    try: return float(txt.replace(",",""))
-    except: return None
-
-def fetch_assoc_raw():
-    r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
-    r.raise_for_status(); r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "lxml")  # เร็วกว่า/ทนกว่า
-
-    data = {
-        "bar_buy":  _num_from_text(soup.select_one("#DetailPlace_uc_goldprices1_lblBLBuy")),
-        "bar_sell": _num_from_text(soup.select_one("#DetailPlace_uc_goldprices1_lblBLSell")),
-        "orn_buy":  _num_from_text(soup.select_one("#DetailPlace_uc_goldprices1_lblOMBuy")),
-        "orn_sell": _num_from_text(soup.select_one("#DetailPlace_uc_goldprices1_lblOMSell")),
-        "times":    None
-    }
-
-    if all(v is None for k,v in data.items() if k.endswith(("buy","sell"))):
-        table_text = " ".join([td.get_text(" ", strip=True) for td in soup.find_all(["td","span"])])
-        nums = re.findall(r"\d{1,3}(?:,\d{3})*(?:\.\d+)?", table_text)
-        if len(nums) >= 4:
-            try:
-                data["bar_buy"]  = float(nums[0].replace(",",""))
-                data["bar_sell"] = float(nums[1].replace(",",""))
-                data["orn_buy"]  = float(nums[2].replace(",",""))
-                data["orn_sell"] = float(nums[3].replace(",",""))
-            except: pass
-
-    ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
-    if ts:
-        m = re.search(r"ครั้งที่\s?(\d+)", ts.get_text(strip=True))
-        if m:
-            try: data["times"] = int(m.group(1))
-            except: data["times"] = None
-    return data
-
-def fetch_assoc_safe():
-    status = {"source": "live", "message": ""}
-    cur = None
-    try:
-        cur = fetch_assoc_raw()
-        if (cur.get("bar_buy") is None) and (cur.get("bar_sell") is None):
-            raise RuntimeError("no_price_elements")
-    except Exception as e:
-        status["source"] = "cache"
-        status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
-        cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None}
-    return cur, status
-
 def fmt_signed(n:int) -> str:
     if n > 0:  return f"+{n}"
     if n < 0:  return f"-{abs(n)}"
@@ -221,26 +156,93 @@ def fmt_delta_for_badge(n:int) -> str:
     return "— 0"
 
 def send_telegram(text:str):
-    if not (TG_TOKEN and TG_CHAT): return
+    if not (TG_TOKEN and TG_CHAT):
+        return
     try:
         requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
                       data={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"},
                       timeout=10)
-    except: pass
+    except:
+        pass
+
+# ------------------ FETCH (with graceful fallback) ------------------
+def fetch_assoc_raw():
+    """ดึงข้อมูลจากเว็บสมาคม (อาจโยน Exception ถ้าเน็ต/โครงสร้างเพจมีปัญหา)"""
+    r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    soup = BeautifulSoup(r.text, "lxml")  # ใช้ lxml เร็ว/ทนกว่า
+
+    def num(sel):
+        t = soup.select_one(sel)
+        txt = t.get_text(strip=True) if t else ""
+        if not txt:
+            return None
+        try:
+            return float(txt.replace(",",""))
+        except:
+            return None
+
+    data = {
+        "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
+        "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
+        "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
+        "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
+        "times":    None,
+        "asof_time": None,  # เวลา ณ สมาคม ถ้ามี
+    }
+
+    ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
+    if ts:
+        ts_text = ts.get_text(strip=True)
+        m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
+        if m:
+            try: data["times"] = int(m.group(1))
+            except: data["times"] = None
+        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
+        if m2:
+            data["asof_time"] = m2.group(1)
+
+    return data
+
+def fetch_assoc_safe():
+    """
+    พยายามดึงข้อมูลจากสมาคม:
+      - ถ้าได้ตัวเลข → ใช้งานเลย
+      - ถ้าดึงไม่ได้/เพจเปลี่ยน/ไม่มีตัวเลข → ใช้แคช STATE_FILE (ถ้ามี)
+      - ถ้าไม่มีแคชเลย → คืน dict เปล่าเพื่อให้โชว์ placeholder
+    พร้อมส่ง flag อธิบายสถานะให้ UI
+    """
+    status = {"source": "live", "message": ""}
+    cur = None
+    try:
+        cur = fetch_assoc_raw()
+        if cur["bar_buy"] is None and cur["bar_sell"] is None:
+            raise RuntimeError("no_price_elements")
+    except Exception as e:
+        status["source"] = "cache"
+        status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
+        cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
+    return cur, status
 
 # ------------------ MAIN ------------------
 st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
 
+# ดึงข้อมูล (มี fallback)
 cur, fetch_status = fetch_assoc_safe()
 prev = load_state()
-if cur: save_state(cur)
+if cur:  # บันทึกเฉพาะกรณีมี dict (แม้บางฟิลด์จะ None)
+    save_state(cur)
 
-now = datetime.now()
+now = datetime.now(TZ)
 date_txt  = th_now(now)
 times_txt = f"ครั้งที่ {cur.get('times')}" if (cur and cur.get("times")) else "ครั้งที่ –"
+asof_time = (cur or {}).get("asof_time")
+display_time = asof_time or now.strftime("%H:%M")  # ให้เวลาสมาคมเป็นหลัก
 
+# Δ เทียบ state (กัน None)
 cur_buy   = float((cur or {}).get("bar_buy")  or 0)
 cur_sell  = float((cur or {}).get("bar_sell") or 0)
 prev_buy  = float((prev or {}).get("bar_buy",  cur_buy)  or 0)
@@ -249,6 +251,7 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
+# ------------------ CARD ------------------
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown(
     f"""
@@ -263,6 +266,7 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
+# แถบแจ้งสถานะตลาด/การดึงข้อมูล
 if is_market_closed(now):
     st.info("🏁 สมาคมค้าทองคำปิดทำการแล้ว • แสดงราคาล่าสุดของวัน", icon="🏁")
 if fetch_status["source"] == "cache" and fetch_status["message"]:
@@ -282,6 +286,7 @@ def price_cell(v, tick):
     cls = "up" if tick>0 else ("down" if tick<0 else "flat")
     return f'<div class="cell right"><span class="price {cls}">{v:,.2f}</span></div>'
 
+# กำหนดค่าที่จะแสดง (ถ้ายังไม่เคยมีข้อมูลเลยให้เป็น None เพื่อโชว์ "–")
 display_buy  = None if (cur is None and not prev) else ((cur or prev).get("bar_buy"))
 display_sell = None if (cur is None and not prev) else ((cur or prev).get("bar_sell"))
 display_obuy = (cur or prev).get("orn_buy")  if (cur or prev) else None
@@ -304,16 +309,19 @@ st.markdown(
 
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown(
-    f'<div class="footer"><div>อัปเดตล่าสุด: <b>{now.strftime("%d/%m/%Y • %H:%M")} น.</b></div><div>{escape(times_txt)}</div></div>',
+    f'<div class="footer"><div>อัปเดตล่าสุด: <b>{now.strftime("%d/%m/%Y")} • {display_time} น.</b></div><div>{escape(times_txt)}</div></div>',
     unsafe_allow_html=True
 )
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
+# ------------------ HISTORY + TELEGRAM ------------------
 ensure_hist()
 
 def seed_today_if_missing(cur_like, now):
-    if not cur_like: return
+    """ถ้าวันนี้ยังไม่มีแถวในประวัติ ให้ seed 1 แถว (Δ=0) เพื่อไม่ให้หน้า 'ว่าง' """
+    if not cur_like:  # ไม่มีข้อมูลอะไรเลยไม่ seed
+        return
     today = now.strftime("%Y-%m-%d")
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
@@ -335,6 +343,7 @@ def seed_today_if_missing(cur_like, now):
 
 seed_today_if_missing(cur or prev, now)
 
+# บันทึกเฉพาะเมื่อมีตัวเลขจริงทั้งก่อนและหลัง
 have_numbers_now  = (cur is not None) and (cur.get("bar_buy") is not None or cur.get("bar_sell") is not None)
 have_numbers_prev = (prev is not None) and (prev.get("bar_buy") is not None or prev.get("bar_sell") is not None)
 changed = have_numbers_now and have_numbers_prev and ((tick_buy != 0) or (tick_sell != 0))
@@ -352,16 +361,18 @@ if changed:
         "d_sell": str(tick_sell),
     })
 
+    # Telegram เฉพาะเมื่อ "ขายออก" เปลี่ยนจริง
     if tick_sell != 0 and TG_TOKEN and TG_CHAT:
-        arrow = "🔺" if tick_sell > 0 else "🔻"
+        arrow = UP_EMOJI if tick_sell > 0 else DOWN_EMOJI
         msg = (
             "<b>สมาคมค้าทองคำ อัปเดตราคา 96.5%</b>\n"
             f"รับซื้อ: <b>{escape(f'{cur_buy:,.0f}')}</b> ({fmt_signed(tick_buy)})\n"
             f"ขายออก: <b>{escape(f'{cur_sell:,.0f}')}</b> ({fmt_signed(tick_sell)}) {arrow}\n"
-            f"{escape(times_txt)}  •  เวลา {now.strftime('%H:%M')} น."
+            f"{escape(times_txt)}  •  เวลา {display_time} น."
         )
         send_telegram(msg)
 
+# ประวัติวันนี้ (เฉพาะรอบที่มีเปลี่ยนแปลง)
 with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
