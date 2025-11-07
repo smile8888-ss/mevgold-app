@@ -1,10 +1,11 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (stable + sticky badge + Thai TZ + TG alert)
-# • Render ได้แม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
+# mevgold_pro_telegram.py — MeVGold 96.5% (mobile-first + sticky badge + Thai TZ + TG alert)
+# • เรนเดอร์ได้แม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
 # • Soft auto-refresh 60s
-# • Badge ▲/▼/คงที่ และ "ค้าง" ตามประกาศครั้งล่าสุดจนกว่าจะมีรอบใหม่
-# • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น (ลูกศรขึ้นสีเขียว/ลงสีแดง)
+# • Badge ▲/▼/คงที่ และ “ค้าง” ตามประกาศครั้งล่าสุดจนกว่าจะมีรอบใหม่
+# • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น (ขึ้น=เขียว/ลง=แดง)
 # • HISTORY: seed แถวแรกของวัน + migrate schema
-# • เวลาไทย Asia/Bangkok และถ้ามี “เวลา ณ สมาคม” จะอ้างอิงเวลานั้นเป็นหลัก
+# • เวลาไทย Asia/Bangkok และถ้าเว็บมี “เวลา ณ สมาคม” จะอ้างอิงเวลานั้นเป็นหลัก
+# • Mobile-first CSS + viewport + PWA meta (manifest / icons)
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -15,82 +16,146 @@ import streamlit as st
 from bs4 import BeautifulSoup
 import pandas as pd
 
-# ------------------ CONFIG ------------------
+# ===== 1) ต้องมาก่อนคำสั่ง st.* อื่นเสมอ =====
 st.set_page_config(page_title="MeVGold — Thai Gold 96.5%", page_icon="🏆", layout="centered")
-st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
+# ===== 2) meta/PWA + auto refresh (ค่อยใส่หลัง page_config) =====
+st.markdown("""
+<link rel="manifest" href="static/manifest.json">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="icon" href="static/icon-192.png">
+<meta name="theme-color" content="#F0C159">
+<meta http-equiv="refresh" content="60">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+""", unsafe_allow_html=True)
+
+# ===== 3) CONFIG / CONST =====
 TZ = ZoneInfo("Asia/Bangkok")
-
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
 SOURCE_URL = "https://www.goldtraders.or.th/default.aspx"
 FETCH_TIMEOUT = 20  # seconds
 
-# อ่าน secrets แบบปลอดภัย
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
 
-# Emojis สำหรับข้อความ Telegram
-UP_EMOJI = "🟢⬆️"     # ขึ้น = เขียว
-DOWN_EMOJI = "🔻⬇️"    # ลง  = แดง
+UP_EMOJI = "🟢⬆️"      # ขึ้น = เขียว
+DOWN_EMOJI = "🔻⬇️"     # ลง  = แดง
 
-# ------------------ STYLES ------------------
+# ===== 4) STYLES (Mobile-first) =====
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700;800&display=swap');
-:root{ --gold1:#F8E08A; --gold2:#F0C159; --gold3:#E3AC3A; --line:rgba(255,255,255,.08); }
-html, body, .stApp{ font-family:'Prompt',system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-  background: radial-gradient(130% 160% at 50% -40%, #121722 0%, #0b0e12 55%, #080a0e 100%); color:#eceff4; }
-.wrap{max-width:980px;margin:0 auto;padding:18px 14px 28px}
-.brand{display:flex;gap:10px;align-items:center;justify-content:center;margin:6px 0 2px}
-.brand b{font-size:36px;letter-spacing:-.2px;background:linear-gradient(92deg,var(--gold1),var(--gold2),var(--gold3));
-  -webkit-background-clip:text;color:transparent;}
-.sub{color:#c9ced6;text-align:center;margin-bottom:8px;font-size:14px}
-.note{color:#aab1bb;text-align:center;margin-bottom:6px;font-size:12px}
-.card{position:relative;border-radius:22px;border:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)),
-             radial-gradient(120% 160% at 90% -30%, rgba(248,224,138,.10), transparent 50%);
-  box-shadow:0 16px 42px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04) inset; overflow:hidden;}
-.header{position:relative; display:flex; align-items:center; justify-content:space-between;
-  padding:14px 16px; border-bottom:1px solid var(--line);
-  background:linear-gradient(180deg, rgba(248,224,138,.12), rgba(240,193,89,.08)); min-height:64px;}
-.header .left{display:flex; gap:12px; align-items:center; flex-wrap:wrap}
-.pill{color:#0b0e12;font-weight:800;border-radius:999px;padding:8px 12px;background:linear-gradient(92deg,#ffe39a,#f6c663);white-space:nowrap}
-.unit{color:#0b0e12;font-size:12px;font-weight:800;border-radius:999px;padding:8px 12px;background:linear-gradient(92deg,#f6c663,#ffe39a);white-space:nowrap}
-.status{position:absolute;right:160px;top:50%;transform:translateY(-50%);pointer-events:none}
-.badge{display:inline-flex; align-items:center; gap:8px; font-weight:900; padding:6px 12px; border-radius:999px; font-size:16px; line-height:1;
-  color:#0b0e12; white-space:nowrap; background:linear-gradient(92deg,#ffe39a,#f6c663);
-  border:1px solid rgba(248,224,138,.6); box-shadow:0 10px 28px rgba(240,193,89,.22), 0 0 0 1px rgba(255,255,255,.06) inset;}
-.table{padding:10px 12px 12px}
-.row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:10px;margin-bottom:10px}
-.cell{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-  border:1px solid var(--line); border-radius:16px; padding:14px 16px; min-height:58px; box-shadow:0 6px 18px rgba(0,0,0,.25) inset;}
-.cell.head{background:linear-gradient(180deg, rgba(248,224,138,.12), rgba(240,193,89,.08));
-  border:1px solid rgba(248,224,138,.35); text-align:center; font-weight:800}
+:root{
+  --gold1:#F8E08A; --gold2:#F0C159; --gold3:#E3AC3A; --line:rgba(255,255,255,.08);
+  --radius-lg:18px; --radius-md:14px; --gap:10px;
+}
+html, body, .stApp{
+  font-family:'Prompt',system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  background: radial-gradient(130% 160% at 50% -40%, #121722 0%, #0b0e12 55%, #080a0e 100%);
+  color:#eceff4;
+}
+.wrap{max-width:920px;margin:0 auto;padding:16px 12px 24px}
+
+.brand{display:flex;gap:8px;align-items:center;justify-content:center;margin:6px 0 0}
+.brand b{
+  font-size:clamp(22px,7vw,36px);
+  letter-spacing:-.2px;
+  background:linear-gradient(92deg,var(--gold1),var(--gold2),var(--gold3));
+  -webkit-background-clip:text;color:transparent;
+}
+.sub{color:#c9ced6;text-align:center;margin:.25rem 0 .5rem;font-size:clamp(11px,3.2vw,14px)}
+.note{color:#aab1bb;text-align:center;margin-bottom:.25rem;font-size:clamp(10px,3vw,12px)}
+
+.card{
+  position:relative;border-radius:var(--radius-lg);border:1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)),
+    radial-gradient(120% 160% at 90% -30%, rgba(248,224,138,.10), transparent 50%);
+  box-shadow:0 14px 36px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04) inset;
+  overflow:hidden;
+}
+
+/* header – mobile */
+.header{
+  display:flex; flex-direction:column; align-items:flex-start; gap:8px;
+  padding:12px; border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(248,224,138,.12), rgba(240,193,89,.08));
+}
+.header .left{display:flex; gap:8px; flex-wrap:wrap}
+.pill,.unit{
+  color:#0b0e12;font-weight:800;border-radius:999px;padding:6px 10px;
+  background:linear-gradient(92deg,#ffe39a,#f6c663);white-space:nowrap;
+  font-size:clamp(12px,3.5vw,13px);
+}
+.unit{background:linear-gradient(92deg,#f6c663,#ffe39a)}
+.status{align-self:flex-end}
+.badge{
+  display:inline-flex; align-items:center; gap:8px; font-weight:900;
+  padding:6px 10px; border-radius:999px; font-size:clamp(13px,4vw,16px); line-height:1;
+  color:#0b0e12; white-space:nowrap;
+  background:linear-gradient(92deg,#ffe39a,#f6c663);
+  border:1px solid rgba(248,224,138,.6);
+  box-shadow:0 10px 28px rgba(240,193,89,.22), 0 0 0 1px rgba(255,255,255,.06) inset;
+}
+
+/* table */
+.table{padding:10px}
+.row{
+  display:grid;
+  grid-template-columns: 1.1fr 1fr 1fr;
+  gap:var(--gap); margin-bottom:var(--gap);
+}
+.cell{
+  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+  border:1px solid var(--line); border-radius:var(--radius-md);
+  padding:12px; min-height:56px;
+  box-shadow:0 6px 18px rgba(0,0,0,.25) inset;
+}
+.cell.head{
+  background:linear-gradient(180deg, rgba(248,224,138,.12), rgba(240,193,89,.08));
+  border:1px solid rgba(248,224,138,.35); text-align:center; font-weight:800;
+  font-size:clamp(12px,3.6vw,14px)
+}
 .cell.right{text-align:right}
-.tag{font-size:13px;color:#cbd5e1}
-.price{font-size:38px; font-weight:900;
-  background:linear-gradient(92deg,#F8E08A,#F0C159,#E3AC3A); -webkit-background-clip:text;color:transparent;text-shadow:0 1px 0 rgba(0,0,0,.35);}
-.price.up{ color:#16a34a; -webkit-text-fill-color:#16a34a; background:none; }
-.price.down{ color:#ef4444; -webkit-text-fill-color:#ef4444; background:none; }
-.price.flat{ color:#cbd5e1; -webkit-text-fill-color:#cbd5e1; background:none; }
-.footer{display:flex;justify-content:space-between;align-items:center;padding:10px 14px 12px;border-top:1px solid var(--line);color:#d1d5db;font-size:13px}
+.tag{font-size:clamp(11px,3.3vw,13px);color:#cbd5e1}
+
+.price{
+  font-size:clamp(28px,8vw,44px); font-weight:900;
+  background:linear-gradient(92deg,#F8E08A,#F0C159,#E3AC3A);
+  -webkit-background-clip:text;color:transparent;text-shadow:0 1px 0 rgba(0,0,0,.35);
+}
+.price.up   { color:#16a34a; -webkit-text-fill-color:#16a34a; background:none; }
+.price.down { color:#ef4444; -webkit-text-fill-color:#ef4444; background:none; }
+.price.flat { color:#cbd5e1; -webkit-text-fill-color:#cbd5e1; background:none; }
+
+.footer{
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  padding:10px 12px 12px;border-top:1px solid var(--line);color:#d1d5db;
+  font-size:clamp(11px,3.2vw,13px)
+}
 .footer b{font-weight:900}
-hr.sep{border:none;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.1),transparent);margin:14px 0}
+hr.sep{border:none;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.1),transparent);margin:12px 0}
+
+/* desktop */
+@media (min-width: 768px){
+  .wrap{padding:18px 14px 28px}
+  .header{flex-direction:row; align-items:center; justify-content:space-between; min-height:64px}
+  .status{position:absolute;right:160px;top:50%;transform:translateY(-50%)}
+  .footer{flex-direction:row;justify-content:space-between;align-items:center}
+}
 </style>
 <div class="wrap">
 """, unsafe_allow_html=True)
 
-# ------------------ HELPERS ------------------
+# ===== 5) HELPERS =====
 TH_DOW   = ["วันจันทร์","วันอังคาร","วันพุธ","วันพฤหัสบดี","วันศุกร์","วันเสาร์","วันอาทิตย์"]
 TH_MONTH = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
 
 def th_now(dt: datetime) -> str:
-    # dt เป็น timezone-aware (Asia/Bangkok)
     return f"{TH_DOW[dt.weekday()]} {dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
 
 def is_market_closed(now: datetime) -> bool:
-    """สมาคมโดยทั่วไปอัปเดตราว 09:00–17:30 → หลัง 17:30 ถือว่าปิด"""
     return (now.hour > 17) or (now.hour == 17 and now.minute >= 30)
 
 def load_state():
@@ -107,11 +172,9 @@ def save_state(d:dict):
     except:
         pass
 
-# schema ของ history
 STD_COLUMNS = ["date","time","times","buy_bar","sell_bar","buy_orn","sell_orn","d_buy","d_sell"]
 
 def migrate_history_file():
-    """ทำให้ history_today.csv เข้ารูปมาตรฐานเสมอ (เติมคอลัมน์ที่ขาดด้วยค่า 0/ว่าง)"""
     if not os.path.exists(HIST_FILE):
         with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
             csv.writer(f).writerow(STD_COLUMNS)
@@ -159,29 +222,27 @@ def send_telegram(text:str):
     if not (TG_TOKEN and TG_CHAT):
         return
     try:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                      data={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"},
-                      timeout=10)
+        requests.post(
+            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+            data={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"},
+            timeout=10
+        )
     except:
         pass
 
-# ------------------ FETCH (with graceful fallback) ------------------
+# ===== 6) FETCH (with graceful fallback) =====
 def fetch_assoc_raw():
-    """ดึงข้อมูลจากเว็บสมาคม (อาจโยน Exception ถ้าเน็ต/โครงสร้างเพจมีปัญหา)"""
     r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
     r.raise_for_status()
     r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "lxml")  # ใช้ lxml เร็ว/ทนกว่า
+    soup = BeautifulSoup(r.text, "lxml")  # เร็ว/ทน
 
     def num(sel):
         t = soup.select_one(sel)
         txt = t.get_text(strip=True) if t else ""
-        if not txt:
-            return None
-        try:
-            return float(txt.replace(",",""))
-        except:
-            return None
+        if not txt: return None
+        try: return float(txt.replace(",",""))
+        except: return None
 
     data = {
         "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
@@ -189,7 +250,7 @@ def fetch_assoc_raw():
         "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
         "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
         "times":    None,
-        "asof_time": None,  # เวลา ณ สมาคม ถ้ามี
+        "asof_time": None,
     }
 
     ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
@@ -203,50 +264,39 @@ def fetch_assoc_raw():
         if m2:
             data["asof_time"] = m2.group(1)
 
+    # ถ้าไม่พบ price เลย ถือว่าล้มเหลว
+    if data["bar_buy"] is None and data["bar_sell"] is None:
+        raise RuntimeError("no_price_elements")
     return data
 
 def fetch_assoc_safe():
-    """
-    พยายามดึงข้อมูลจากสมาคม:
-      - ถ้าได้ตัวเลข → ใช้งานเลย
-      - ถ้าดึงไม่ได้/เพจเปลี่ยน/ไม่มีตัวเลข → ใช้แคช STATE_FILE (ถ้ามี)
-      - ถ้าไม่มีแคชเลย → คืน dict เปล่าเพื่อให้โชว์ placeholder
-    พร้อมส่ง flag อธิบายสถานะให้ UI
-    """
     status = {"source": "live", "message": ""}
-    cur = None
     try:
         cur = fetch_assoc_raw()
-        if cur["bar_buy"] is None and cur["bar_sell"] is None:
-            raise RuntimeError("no_price_elements")
+        return cur, status
     except Exception as e:
         status["source"] = "cache"
         status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
         cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
-    return cur, status
+        return cur, status
 
-# ------------------ MAIN ------------------
+# ===== 7) MAIN UI =====
 st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
 
-# ดึงข้อมูล (มี fallback) + โหลด state เก่า
 cur, fetch_status = fetch_assoc_safe()
-
-# โหลด state เก่า (รวม field พิเศษของ badge ด้วย)
 state = load_state() or {}
-prev  = state  # ใช้เป็น previous snapshot ด้วย
+prev  = state
 
 now = datetime.now(TZ)
 date_txt  = th_now(now)
 
-# ข้อมูล "ครั้งที่" และ "เวลา ณ สมาคม"
 times_now = (cur or {}).get("times")
 asof_time = (cur or {}).get("asof_time")
 times_txt = f"ครั้งที่ {times_now}" if times_now else "ครั้งที่ –"
 display_time = asof_time or now.strftime("%H:%M")
 
-# Δ เทียบ state (กัน None)
 cur_buy   = float((cur or {}).get("bar_buy")  or 0)
 cur_sell  = float((cur or {}).get("bar_sell") or 0)
 prev_buy  = float((prev or {}).get("bar_buy",  cur_buy)  or 0)
@@ -255,25 +305,24 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
-# ---------- ทำให้ "ป้ายสถานะ" ติดค้างตามครั้งล่าสุด ----------
+# ----- Sticky badge (ค้างตามรอบล่าสุด) -----
 prev_badge_times = prev.get("badge_times")
 prev_badge_delta = prev.get("badge_delta")
 
 if times_now is None:
-    # ถ้าเว็บไม่ระบุครั้งที่ → ก็ใช้ delta เทียบ state ทันที
     badge_delta_display = tick_sell
     badge_times_to_save = prev_badge_times
 else:
     if prev_badge_times == times_now:
-        # ยังเป็นครั้งเดิม → ใช้ค่าเดิมค้างไว้
         badge_delta_display = prev_badge_delta if prev_badge_delta is not None else tick_sell
         badge_times_to_save = prev_badge_times
     else:
-        # เข้ารอบใหม่ (ครั้งที่เปลี่ยน) → รีเฟรชค่า badge จาก tick ของรอบนี้
         badge_delta_display = tick_sell
         badge_times_to_save = times_now
+if badge_delta_display is None:
+    badge_delta_display = 0
 
-# ------------------ CARD ------------------
+# ----- CARD -----
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown(
     f"""
@@ -288,7 +337,6 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-# แถบแจ้งสถานะตลาด/การดึงข้อมูล
 if is_market_closed(now):
     st.info("🏁 สมาคมค้าทองคำปิดทำการแล้ว • แสดงราคาล่าสุดของวัน", icon="🏁")
 if fetch_status["source"] == "cache" and fetch_status["message"]:
@@ -308,15 +356,14 @@ def price_cell(v, tick):
     cls = "up" if tick>0 else ("down" if tick<0 else "flat")
     return f'<div class="cell right"><span class="price {cls}">{v:,.2f}</span></div>'
 
-# กำหนดค่าที่จะแสดง (ถ้ายังไม่เคยมีข้อมูลเลยให้เป็น None เพื่อโชว์ "–")
-display_buy  = None if (cur is None and not prev) else ((cur or prev).get("bar_buy"))
-display_sell = None if (cur is None and not prev) else ((cur or prev).get("bar_sell"))
+display_buy  = (cur or prev).get("bar_buy")  if (cur or prev) else None
+display_sell = (cur or prev).get("bar_sell") if (cur or prev) else None
 display_obuy = (cur or prev).get("orn_buy")  if (cur or prev) else None
 display_osell= (cur or prev).get("orn_sell") if (cur or prev) else None
 
 st.markdown(
     f'<div class="row"><div class="cell"><div class="tag">ทองคำแท่ง</div></div>'
-    f'{price_cell(display_buy, int(round((display_buy or 0) - (prev_buy if display_buy is not None else 0))))}'
+    f'{price_cell(display_buy,  int(round((display_buy  or 0) - (prev_buy  if display_buy  is not None else 0))))}'
     f'{price_cell(display_sell, int(round((display_sell or 0) - (prev_sell if display_sell is not None else 0))))}</div>',
     unsafe_allow_html=True
 )
@@ -338,12 +385,11 @@ st.markdown(
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
-# ------------------ HISTORY + TELEGRAM ------------------
+# ===== 8) HISTORY + TELEGRAM =====
 ensure_hist()
 
 def seed_today_if_missing(cur_like, now):
-    """ถ้าวันนี้ยังไม่มีแถวในประวัติ ให้ seed 1 แถว (Δ=0) เพื่อไม่ให้หน้า 'ว่าง' """
-    if not cur_like:  # ไม่มีข้อมูลอะไรเลยไม่ seed
+    if not cur_like:
         return
     today = now.strftime("%Y-%m-%d")
     try:
@@ -366,7 +412,6 @@ def seed_today_if_missing(cur_like, now):
 
 seed_today_if_missing(cur or prev, now)
 
-# บันทึกเฉพาะเมื่อมีตัวเลขจริงทั้งก่อนและหลัง
 have_numbers_now  = (cur is not None) and (cur.get("bar_buy") is not None or cur.get("bar_sell") is not None)
 have_numbers_prev = (prev is not None) and (prev.get("bar_buy") is not None or prev.get("bar_sell") is not None)
 changed = have_numbers_now and have_numbers_prev and ((tick_buy != 0) or (tick_sell != 0))
@@ -383,8 +428,6 @@ if changed:
         "d_buy":  str(tick_buy),
         "d_sell": str(tick_sell),
     })
-
-    # Telegram เฉพาะเมื่อ "ขายออก" เปลี่ยนจริง
     if tick_sell != 0 and TG_TOKEN and TG_CHAT:
         arrow = UP_EMOJI if tick_sell > 0 else DOWN_EMOJI
         msg = (
@@ -395,19 +438,22 @@ if changed:
         )
         send_telegram(msg)
 
-# ------------------ SAVE STATE (รวมค่า badge) ------------------
+# ===== 9) SAVE STATE (เฉพาะเมื่อดึงสดสำเร็จเท่านั้น) =====
 new_state = dict(cur or {})
-new_state["bar_buy"]  = (cur or {}).get("bar_buy")
-new_state["bar_sell"] = (cur or {}).get("bar_sell")
-new_state["orn_buy"]  = (cur or {}).get("orn_buy")
-new_state["orn_sell"] = (cur or {}).get("orn_sell")
-new_state["times"]    = times_now
-new_state["asof_time"]= asof_time
+new_state["bar_buy"]   = (cur or {}).get("bar_buy")
+new_state["bar_sell"]  = (cur or {}).get("bar_sell")
+new_state["orn_buy"]   = (cur or {}).get("orn_buy")
+new_state["orn_sell"]  = (cur or {}).get("orn_sell")
+new_state["times"]     = times_now
+new_state["asof_time"] = asof_time
 new_state["badge_times"] = badge_times_to_save
 new_state["badge_delta"] = badge_delta_display
-save_state(new_state)
 
-# ------------------ HISTORY VIEW ------------------
+# อย่าเขียนทับ state เดิมถ้าเราเพิ่งใช้แคช (กันค่าหาย)
+if fetch_status["source"] == "live":
+    save_state(new_state)
+
+# ===== 10) HISTORY VIEW =====
 with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
