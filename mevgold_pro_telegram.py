@@ -1,8 +1,8 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (stable + history seed + TG alert)
+# mevgold_pro_telegram.py — MeVGold 96.5% (stable + sticky badge + Thai TZ + TG alert)
 # • Render ได้แม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
 # • Soft auto-refresh 60s
-# • Badge ▲/▼/คงที่
-# • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น
+# • Badge ▲/▼/คงที่ และ "ค้าง" ตามประกาศครั้งล่าสุดจนกว่าจะมีรอบใหม่
+# • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น (ลูกศรขึ้นสีเขียว/ลงสีแดง)
 # • HISTORY: seed แถวแรกของวัน + migrate schema
 # • เวลาไทย Asia/Bangkok และถ้ามี “เวลา ณ สมาคม” จะอ้างอิงเวลานั้นเป็นหลัก
 
@@ -151,8 +151,8 @@ def fmt_signed(n:int) -> str:
     return "0"
 
 def fmt_delta_for_badge(n:int) -> str:
-    if n > 0:  return f"▲ {fmt_signed(n)}"
-    if n < 0:  return f"▼ {fmt_signed(n)}"
+    if n > 0:  return f"▲ +{n}"
+    if n < 0:  return f"▼ -{abs(n)}"
     return "— 0"
 
 def send_telegram(text:str):
@@ -230,17 +230,21 @@ st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=Tr
 st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
 
-# ดึงข้อมูล (มี fallback)
+# ดึงข้อมูล (มี fallback) + โหลด state เก่า
 cur, fetch_status = fetch_assoc_safe()
-prev = load_state()
-if cur:  # บันทึกเฉพาะกรณีมี dict (แม้บางฟิลด์จะ None)
-    save_state(cur)
+
+# โหลด state เก่า (รวม field พิเศษของ badge ด้วย)
+state = load_state() or {}
+prev  = state  # ใช้เป็น previous snapshot ด้วย
 
 now = datetime.now(TZ)
 date_txt  = th_now(now)
-times_txt = f"ครั้งที่ {cur.get('times')}" if (cur and cur.get("times")) else "ครั้งที่ –"
+
+# ข้อมูล "ครั้งที่" และ "เวลา ณ สมาคม"
+times_now = (cur or {}).get("times")
 asof_time = (cur or {}).get("asof_time")
-display_time = asof_time or now.strftime("%H:%M")  # ให้เวลาสมาคมเป็นหลัก
+times_txt = f"ครั้งที่ {times_now}" if times_now else "ครั้งที่ –"
+display_time = asof_time or now.strftime("%H:%M")
 
 # Δ เทียบ state (กัน None)
 cur_buy   = float((cur or {}).get("bar_buy")  or 0)
@@ -251,6 +255,24 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
+# ---------- ทำให้ "ป้ายสถานะ" ติดค้างตามครั้งล่าสุด ----------
+prev_badge_times = prev.get("badge_times")
+prev_badge_delta = prev.get("badge_delta")
+
+if times_now is None:
+    # ถ้าเว็บไม่ระบุครั้งที่ → ก็ใช้ delta เทียบ state ทันที
+    badge_delta_display = tick_sell
+    badge_times_to_save = prev_badge_times
+else:
+    if prev_badge_times == times_now:
+        # ยังเป็นครั้งเดิม → ใช้ค่าเดิมค้างไว้
+        badge_delta_display = prev_badge_delta if prev_badge_delta is not None else tick_sell
+        badge_times_to_save = prev_badge_times
+    else:
+        # เข้ารอบใหม่ (ครั้งที่เปลี่ยน) → รีเฟรชค่า badge จาก tick ของรอบนี้
+        badge_delta_display = tick_sell
+        badge_times_to_save = times_now
+
 # ------------------ CARD ------------------
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown(
@@ -260,7 +282,7 @@ st.markdown(
         <div class="pill">ประจำวันที่ {date_txt}</div>
         <div class="pill">{escape(times_txt)}</div>
       </div>
-      <div class="status"><div class="badge">{escape(fmt_delta_for_badge(tick_sell))}</div></div>
+      <div class="status"><div class="badge">{escape(fmt_delta_for_badge(badge_delta_display))}</div></div>
       <div class="unit">บาทละ (บาท)</div>
     </div>
     """, unsafe_allow_html=True
@@ -294,7 +316,8 @@ display_osell= (cur or prev).get("orn_sell") if (cur or prev) else None
 
 st.markdown(
     f'<div class="row"><div class="cell"><div class="tag">ทองคำแท่ง</div></div>'
-    f'{price_cell(display_buy, tick_buy)}{price_cell(display_sell, tick_sell)}</div>',
+    f'{price_cell(display_buy, int(round((display_buy or 0) - (prev_buy if display_buy is not None else 0))))}'
+    f'{price_cell(display_sell, int(round((display_sell or 0) - (prev_sell if display_sell is not None else 0))))}</div>',
     unsafe_allow_html=True
 )
 
@@ -352,7 +375,7 @@ if changed:
     append_hist({
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
-        "times": cur.get("times",""),
+        "times": times_now or "",
         "buy_bar":  f"{cur_buy:.2f}",
         "sell_bar": f"{cur_sell:.2f}",
         "buy_orn":  f"{(cur.get('orn_buy')  or 0):.2f}" if cur.get("orn_buy")  is not None else "",
@@ -372,7 +395,19 @@ if changed:
         )
         send_telegram(msg)
 
-# ประวัติวันนี้ (เฉพาะรอบที่มีเปลี่ยนแปลง)
+# ------------------ SAVE STATE (รวมค่า badge) ------------------
+new_state = dict(cur or {})
+new_state["bar_buy"]  = (cur or {}).get("bar_buy")
+new_state["bar_sell"] = (cur or {}).get("bar_sell")
+new_state["orn_buy"]  = (cur or {}).get("orn_buy")
+new_state["orn_sell"] = (cur or {}).get("orn_sell")
+new_state["times"]    = times_now
+new_state["asof_time"]= asof_time
+new_state["badge_times"] = badge_times_to_save
+new_state["badge_delta"] = badge_delta_display
+save_state(new_state)
+
+# ------------------ HISTORY VIEW ------------------
 with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
