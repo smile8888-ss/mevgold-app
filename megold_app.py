@@ -5,9 +5,9 @@ from bs4 import BeautifulSoup
 # =====================================================
 # 🔑 ส่วนตั้งค่า (แก้แค่ 2 บรรทัดนี้)
 # =====================================================
-ONESIGNAL_APP_ID = "f2770b48-2c38-4b73-9ba8-6c11469fe53e" 
+ONESIGNAL_APP_ID = "6c5ebe0f-c2e6-4c00-8261-f217f76da7a1" 
 # เปลี่ยน Basic เป็น Bearer นะครับ
-ONESIGNAL_API_KEY = "Bearer os_v2_app_6j3qwsbmhbfxhg5inqiunh7fhzbe4ctsbnlu56ny4m4s7yje2yvy233orfxnlgfop4lw23elugqcnwu7qwh5iwmrflb2kxbntmj5tcy"
+ONESIGNAL_API_KEY = "Bearer os_v2_app_nrpl4d6c4zgabatb6il7o3nhuhlk5grqye4e4tv6nl66yhjrpnzrzocpcwwhznibrw7d3efyge5wfdt5rutbm4q3hl7yta6lgkewx5y"
 
 # =====================================================
 # 📨 ฟังก์ชันส่งแจ้งเตือน (ยิงเข้ามือถือ)
