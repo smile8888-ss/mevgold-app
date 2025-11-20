@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 # =====================================================
 ONESIGNAL_APP_ID = "6c5ebe0f-c2e6-4c00-8261-f217f76da7a1" 
 # เปลี่ยน Basic เป็น Bearer นะครับ
-ONESIGNAL_API_KEY = "Bearer os_v2_app_nrpl4d6c4zgabatb6il7o3nhuhlk5grqye4e4tv6nl66yhjrpnzrzocpcwwhznibrw7d3efyge5wfdt5rutbm4q3hl7yta6lgkewx5y"
+ONESIGNAL_API_KEY = "Bearer os_v2_app_nrpl4d6c4zgabatb6il7o3nhugsrsy5zec4ewreezk2leqkqsxzcrfd5lgtyfcdqsqi6ehxp2hvv64oiq6iwooinmnfedxjbcdxdr3a"
 
 # =====================================================
 # 📨 ฟังก์ชันส่งแจ้งเตือน (ยิงเข้ามือถือ)
