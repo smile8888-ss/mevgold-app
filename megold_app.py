@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 # 🔑 ส่วนตั้งค่า (แก้แค่ 2 บรรทัดนี้)
 # =====================================================
 ONESIGNAL_APP_ID = "f2770b48-2c38-4b73-9ba8-6c11469fe53e" 
-ONESIGNAL_API_KEY = "Basic os_v2_app_6j3qwsbmhbfxhg5inqiunh7fhzuxxmoflztup65ef2ikyfk75iqa4ftntlhdh6l5i632llvs6pqvvsgaetcj3cv7bnlmzkyakxh57wi" 
+ONESIGNAL_API_KEY = "Basic zuxxmoflztup65ef2ikyfk75iqa4ftntlhdh6l5i632llvs6pqvvsgaetcj3cv7bnlmzkyakxh57wi" 
 # (อย่าลืมคำว่า Basic และเว้นวรรค 1 ทีข้างหน้า Key)
 
 # =====================================================
