@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "megold-app",
+  "private_key_id": "9d08abf8f6883e82720da4369abb646d3c0bb560",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPXItg78x1+o/o\n89iG8edrXVZQOllZKvOs5ukmUzwqQC3NeW4DD9nbZ6SDw/yQmVAbdincdwQRSEwg\nFsC8ryxkpDnNQpplFxA0cEJ8tQo80ZxWToJlzfajb84Qj0tqPTYS5pkEQnJgwlW8\n2BDKhUsVUMorwgfF+H2bpmy4Y//Xy5WPAAAflxrHze0peRI9Yzc7RN/KPXeYo+Av\niDSBZtfMrZ5d1hlYpvgCzLdcYNcVRNzThmIdI86Z53xViaLlLgrZ8Zfh4npATVUw\nNeMBg91n0Kj5idv8DuWen1iRKjUIbOegP3+hSUbYIpoG0WDr62mPqNyiWzjulwn5\nCEaCYXjhAgMBAAECgf9rHpa9aieA25OHxhopBAV5fPtvQCoVLUwK5aOZtk7QsNqt\nG1fPOwjXDL7gkWxLMbEXZjOYGnqB3RXgCNcfkzJPbq/B+Lkbq2knM0zD4fAyE9sq\n6zWokvQlKvfOQ0Px+YG3MASTl+4oFVaNVuTr3Br1G41ikpiqCyc9lB0WPH2ldqO2\nhal/SaYGajnhYjcrWedtYPKwXs2oETeLNiAUE1NyOzy67HTmRBl2DqzyM5FnpARv\nHiZ3uCJEZInMMy4aspakOKUYBKAyoa3ZDwCQwMuvTZkOVzcs8Nj28tUvDn8+58pk\nqqHhBkuwvfHMOJrM9aANzbH7pdHhXVW2AJurH3UCgYEAylF3ZLtrQFZTiBmYS8+C\neFwhiQAvcaA31UIXLFMKYfpC2HRFa3ZujNBJ0RLD88V03zlLG4BeVS3poxA/sk6g\n1nkeHqACKbM+2a8W32YqutbbhEqq9G5ZwvKqjq7Jw6BDksNBxeoDyJPqkKCAVWGx\nXbv74ns82U7haTYdzm8ZQJ8CgYEAtWZsMRCwiJQwc5RR1GkaxLZrS/4DnSnr7Nup\nTTG5mdTr3avJmCJBydFelQc+hKCYvvvwUCcsrN6SqWkCRjcfHAamKU05l5M2agnJ\n8fJ5iTiwIPPHyi8+L5uYhmi9Bb7+1tp3qzhmVbvaFCYMD7eMQq4C9v9GZ4VFHO6h\nAiu7Vn8CgYEAvDEVTvTq6bijEKlGOdZ3NT/1zbsHZrky1kMYzRkdQlAJF9DntfM/\nF+qzjy/WaA2XDgD8NUOt+6uudQirR0/OWlHlS3VpLaLW5qPwMbOWMZ+kJ6VQ6fcv\ntaAGOJyrfzW3RXAs4U0xYcT9XrR9S26JDnjK7zvVOQofsL8u8JP1OF8CgYEAgQ5n\ndtjq36Cef/xL45ULaFxoJd6Ib649nXwCDVuNMnabgFAR0ty8dXsxkVFgFzeytF3F\n8SCN1kdbjI+bAJ2C0ougd83rZX1kvzhLpojeEtRz6l3GDIBj+7b1YtrtcEMcR3uS\nnAw6MlC9rIwNFLl/XokyrsubKVdVfmn/vu2iEL0CgYEAildbqi2uXDJk6p3HQ8LP\nMI8Ae/scKcmfGUPmUnfcRtBaqejh0+5746DY01NxoHk4kVkgWeD19bpEdFC/nZ5y\nv7Rx4jISPhzEBRyGWc9rErfTVUh5VLT2FZSy3zn55jIwHyysH1Q+E364rktzmCYC\npi8pGpCuHl/ZoroSdti5tPA=\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-fbsvc@megold-app.iam.gserviceaccount.com",
+  "client_id": "106605295384852319462",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40megold-app.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
