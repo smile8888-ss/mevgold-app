@@ -165,7 +165,12 @@ def fetch_gold_thai():
 
         # ถ้าหาไม่เจอจริงๆ ให้ Error เพื่อแจ้งเตือน
         if sellv is None or buyv is None:
-             raise ValueError("หาตัวเลขราคาไม่เจอ (Structure changed or Encoding error)")
+             st.error("⚠️ บอทหาคำว่า 'ทองคำแท่ง' ไม่เจอ! (Encoding/Structure Error)")
+             # ✅ DEBUG MODE: แสดง HTML ที่บอทเห็น เพื่อดูว่าติดอะไร
+             with st.expander("🔎 ดู HTML ที่บอทเห็น (Debug Info)", expanded=True):
+                 st.code(soup.prettify()[:4000], language='html')
+             
+             raise ValueError("หาตัวเลขราคาไม่เจอ")
 
         return {"buy_bar": buyv, "sell_bar": sellv, "times": times, "timestamp": tstr}
 
