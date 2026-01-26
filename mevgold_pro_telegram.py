@@ -1,5 +1,11 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (Telegram Version)
-# แก้ไขล่าสุด: เพิ่มระบบถอดรหัสภาษาไทย 2 ชั้น (UTF-8 และ CP874) + Debug Mode
+# mevgold_pro_telegram.py — MeVGold 96.5% (mobile-first + sticky badge + Thai TZ + TG alert)
+# • เรนเดอร์ได้แม้ดึงเว็บสมาคมไม่ได้/ปิดทำการ (ใช้แคช/placeholder)
+# • Soft auto-refresh 60s
+# • Badge ▲/▼/คงที่ และ “ค้าง” ตามประกาศครั้งล่าสุดจนกว่าจะมีรอบใหม่
+# • Telegram: ส่งเมื่อ “ขายออก” เปลี่ยนจริงเท่านั้น (ขึ้น=เขียว/ลง=แดง)
+# • HISTORY: seed แถวแรกของวัน + migrate schema
+# • เวลาไทย Asia/Bangkok และถ้าเว็บมี “เวลา ณ สมาคม” จะอ้างอิงเวลานั้นเป็นหลัก
+# • Mobile-first CSS + viewport + PWA meta (manifest / icons)
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -13,7 +19,7 @@ import pandas as pd
 # ===== 1) ต้องมาก่อนคำสั่ง st.* อื่นเสมอ =====
 st.set_page_config(page_title="MeVGold — Thai Gold 96.5%", page_icon="🏆", layout="centered")
 
-# ===== 2) meta/PWA + auto refresh =====
+# ===== 2) meta/PWA + auto refresh (ค่อยใส่หลัง page_config) =====
 st.markdown("""
 <link rel="manifest" href="static/manifest.json">
 <link rel="apple-touch-icon" href="static/apple-touch-icon.png">
@@ -28,13 +34,13 @@ TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
 SOURCE_URL = "https://www.goldtraders.or.th/default.aspx"
-FETCH_TIMEOUT = 25  # เพิ่มเวลาเผื่อเว็บช้า
+FETCH_TIMEOUT = 20  # seconds
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
 
-UP_EMOJI = "🟢⬆️"      
-DOWN_EMOJI = "🔻⬇️"     
+UP_EMOJI = "🟢⬆️"      # ขึ้น = เขียว
+DOWN_EMOJI = "🔻⬇️"     # ลง  = แดง
 
 # ===== 4) STYLES (Mobile-first) =====
 st.markdown("""
@@ -164,22 +170,34 @@ def save_state(d:dict):
 
 STD_COLUMNS = ["date","time","times","buy_bar","sell_bar","buy_orn","sell_orn","d_buy","d_sell"]
 
-def ensure_hist():
-    # สร้างหรือซ่อมไฟล์ History
+def migrate_history_file():
     if not os.path.exists(HIST_FILE):
         with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
             csv.writer(f).writerow(STD_COLUMNS)
         return
-    
-    # ตรวจสอบว่ามี Column ครบไหม
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
-        for col in STD_COLUMNS:
-            if col not in df.columns:
-                df[col] = "0"
-        df[STD_COLUMNS].to_csv(HIST_FILE, index=False, encoding="utf-8")
-    except:
-        pass
+    except Exception:
+        with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
+            csv.writer(f).writerow(STD_COLUMNS)
+        return
+    for col in STD_COLUMNS:
+        if col not in df.columns:
+            df[col] = "" if col in ["times","buy_orn","sell_orn"] else "0"
+    df = df[STD_COLUMNS]
+    df.to_csv(HIST_FILE, index=False, encoding="utf-8")
+
+def ensure_hist():
+    migrate_history_file()
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    try:
+        df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
+        if df.empty or "date" not in df.columns or not (df["date"] == today).any():
+            with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
+                csv.writer(f).writerow(STD_COLUMNS)
+    except Exception:
+        with open(HIST_FILE,"w",newline="",encoding="utf-8") as f:
+            csv.writer(f).writerow(STD_COLUMNS)
 
 def append_hist(row:dict):
     ensure_hist()
@@ -208,100 +226,43 @@ def send_telegram(text:str):
     except:
         pass
 
-# ===== 6) FETCH (ULTRA ROBUST) =====
+# ===== 6) FETCH (with graceful fallback) =====
 def fetch_assoc_raw():
-    # เปลี่ยนเป้าหมาย: ไม่เข้าหน้าแรก (ที่หมุนติ้วๆ) 
-    # แต่เข้าหน้า "ราคาทองคำประจำวัน" (ที่เป็นตาราง HTML โบราณ) แทน
-    HIST_URL = "https://www.goldtraders.or.th/DailyPrices.aspx"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Cache-Control": "no-cache"
-    }
+    r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    soup = BeautifulSoup(r.text, "lxml")  # เร็ว/ทน
 
-    try:
-        r = requests.get(HIST_URL, headers=headers, timeout=FETCH_TIMEOUT)
-        r.raise_for_status()
-        # หน้าตารางนี้มักใช้ utf-8 แต่กันเหนียวไว้
-        r.encoding = r.apparent_encoding 
-        soup = BeautifulSoup(r.text, "html.parser")
-    except Exception as e:
-        raise RuntimeError(f"Connect Error: {e}")
-
-    # ค้นหาตาราง (Table)
-    # ปกติหน้า History จะมีตารางใหญ่ๆ อยู่ตรงกลาง
-    # เราจะหาตารางที่มีคำว่า "เวลา" หรือ "ครั้งที่" อยู่ในหัวตาราง
-    target_table = None
-    for table in soup.find_all("table"):
-        if "ครั้งที่" in table.get_text() and "เวลา" in table.get_text():
-            target_table = table
-            break
-    
-    if not target_table:
-         # เผื่อหาตารางไม่เจอ ลองหา row โดยตรง
-         pass
-
-    # ฟังก์ชันช่วยดึงตัวเลขจาก Cell
-    def parse_num(txt):
+    def num(sel):
+        t = soup.select_one(sel)
+        txt = t.get_text(strip=True) if t else ""
         if not txt: return None
-        clean = txt.replace(",", "").strip()
-        try: return float(clean)
+        try: return float(txt.replace(",",""))
         except: return None
 
-    # เริ่มแกะข้อมูลจาก "แถวแรก" ที่ไม่ใช่หัวตาราง (ข้อมูลล่าสุด)
-    # โครงสร้างปกติ: วันที่ | เวลา | ครั้งที่ | แท่งรับซื้อ | แท่งขายออก | รูปพรรณรับซื้อ | รูปพรรณขายออก ...
     data = {
-        "bar_buy": None, "bar_sell": None, 
-        "orn_buy": None, "orn_sell": None, 
-        "times": None, "asof_time": None
+        "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
+        "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
+        "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
+        "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
+        "times":    None,
+        "asof_time": None,
     }
 
-    found_row = False
-    
-    # วนหาแถวข้อมูล (ข้ามแถวหัวข้อ)
-    # เราจะหาแถวที่มี "ตัวเลขราคา" ครบๆ
-    rows = soup.find_all("tr")
-    for row in rows:
-        cols = row.find_all("td")
-        # ต้องมีมากกว่า 5 คอลัมน์ (วันที่, เวลา, ครั้งที่, ราคา4ตัว...)
-        if len(cols) >= 8:
-            # ลองเช็คว่าเป็นแถวข้อมูลจริงไหม (คอลัมน์ 3 ต้องเป็นราคา)
-            test_price = parse_num(cols[3].get_text(strip=True))
-            if test_price and test_price > 10000:
-                # เจอแล้ว! นี่คือแถวข้อมูลล่าสุด (เพราะอยู่บนสุด)
-                
-                # [0]=วันที่, [1]=เวลา, [2]=ครั้งที่
-                # [3]=แท่งรับซื้อ, [4]=แท่งขายออก
-                # [5]=รูปพรรณรับซื้อ, [6]=รูปพรรณขายออก
-                
-                # ดึงเวลา
-                raw_time = cols[1].get_text(strip=True) # เช่น 09:30
-                data["asof_time"] = raw_time
-                
-                # ดึงครั้งที่
-                raw_times = cols[2].get_text(strip=True)
-                try: data["times"] = int(raw_times)
-                except: data["times"] = None
+    ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
+    if ts:
+        ts_text = ts.get_text(strip=True)
+        m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
+        if m:
+            try: data["times"] = int(m.group(1))
+            except: data["times"] = None
+        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
+        if m2:
+            data["asof_time"] = m2.group(1)
 
-                # ดึงราคา
-                data["bar_buy"]  = parse_num(cols[3].get_text(strip=True))
-                data["bar_sell"] = parse_num(cols[4].get_text(strip=True))
-                data["orn_buy"]  = parse_num(cols[5].get_text(strip=True))
-                data["orn_sell"] = parse_num(cols[6].get_text(strip=True))
-                
-                found_row = True
-                break # เจอแถวบนสุด (ล่าสุด) แล้วหยุดเลย
-
-    if not found_row or data["bar_sell"] is None:
-        # Debug: ถ้าหาไม่เจอจริงๆ
-        st.error("❌ หาตารางราคาในหน้า DailyPrices ไม่เจอ")
-        raise RuntimeError("no_price_elements (Source: GTA History Page)")
-    
-    # Fallback เวลา ถ้าในตารางไม่มี
-    if data["asof_time"] is None:
-        data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
-
+    # ถ้าไม่พบ price เลย ถือว่าล้มเหลว
+    if data["bar_buy"] is None and data["bar_sell"] is None:
+        raise RuntimeError("no_price_elements")
     return data
 
 def fetch_assoc_safe():
@@ -312,7 +273,7 @@ def fetch_assoc_safe():
     except Exception as e:
         status["source"] = "cache"
         status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
-        cur = load_state() or {}
+        cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
         return cur, status
 
 # ===== 7) MAIN UI =====
@@ -340,7 +301,7 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
-# ----- Sticky badge logic -----
+# ----- Sticky badge (ค้างตามรอบล่าสุด) -----
 prev_badge_times = prev.get("badge_times")
 prev_badge_delta = prev.get("badge_delta")
 
@@ -420,16 +381,17 @@ st.markdown(
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
-# ===== 8) HISTORY + TELEGRAM (NOT MODIFIED) =====
+# ===== 8) HISTORY + TELEGRAM =====
 ensure_hist()
 
 def seed_today_if_missing(cur_like, now):
-    if not cur_like: return
+    if not cur_like:
+        return
     today = now.strftime("%Y-%m-%d")
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
-    except: return
-    
+    except Exception:
+        return
     has_today = (not df.empty) and ("date" in df.columns) and (df["date"] == today).any()
     if not has_today:
         bb = cur_like.get("bar_buy");  bs = cur_like.get("bar_sell")
@@ -472,30 +434,48 @@ if changed:
         )
         send_telegram(msg)
 
-# ===== 9) SAVE STATE =====
+# ===== 9) SAVE STATE (เฉพาะเมื่อดึงสดสำเร็จเท่านั้น) =====
+new_state = dict(cur or {})
+new_state["bar_buy"]   = (cur or {}).get("bar_buy")
+new_state["bar_sell"]  = (cur or {}).get("bar_sell")
+new_state["orn_buy"]   = (cur or {}).get("orn_buy")
+new_state["orn_sell"]  = (cur or {}).get("orn_sell")
+new_state["times"]     = times_now
+new_state["asof_time"] = asof_time
+new_state["badge_times"] = badge_times_to_save
+new_state["badge_delta"] = badge_delta_display
+
+# อย่าเขียนทับ state เดิมถ้าเราเพิ่งใช้แคช (กันค่าหาย)
 if fetch_status["source"] == "live":
-    new_state = dict(cur or {})
-    new_state["badge_times"] = badge_times_to_save
-    new_state["badge_delta"] = badge_delta_display
     save_state(new_state)
 
 # ===== 10) HISTORY VIEW =====
 with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
-        today = now.strftime("%Y-%m-%d")
-        df = df[df["date"] == today].copy()
-        if df.empty:
+        if df.empty or "date" not in df.columns:
             st.info("ยังไม่มีประวัติของวันนี้")
         else:
-            df["_dt"] = pd.to_datetime(df["date"]+" "+df["time"], errors="coerce")
-            df = df.sort_values("_dt", ascending=False)
-            def sign_only(x):
-                try:
-                    n = int(float(x))
-                    return f"+{n}" if n>0 else (f"-{abs(n)}" if n<0 else "0")
-                except: return "0"
-            df["สถานะ"] = df["d_sell"].apply(sign_only)
-            st.dataframe(df[["time","buy_bar","sell_bar","สถานะ"]], hide_index=True)
-    except:
-        pass
+            today = now.strftime("%Y-%m-%d")
+            df = df[df["date"] == today].copy()
+            if df.empty:
+                st.info("ยังไม่มีประวัติของวันนี้")
+            else:
+                for col in ["time","buy_bar","sell_bar","d_sell"]:
+                    if col not in df.columns:
+                        df[col] = "0" if col == "d_sell" else ""
+                df["_dt"] = pd.to_datetime(df["date"]+" "+df["time"], errors="coerce")
+                df = df.sort_values("_dt", ascending=False)
+                def sign_only(x):
+                    try:
+                        n = int(float(x))
+                        return f"+{n}" if n>0 else (f"-{abs(n)}" if n<0 else "0")
+                    except:
+                        return "0"
+                df["สถานะ (บาท)"] = df["d_sell"].apply(sign_only)
+                df = df.rename(columns={"date":"วันที่","time":"เวลา","buy_bar":"ราคาซื้อ","sell_bar":"ราคาขาย"})
+                st.dataframe(df[["วันที่","เวลา","ราคาซื้อ","ราคาขาย","สถานะ (บาท)"]], hide_index=True)
+    except Exception as e:
+        st.info(f"อ่านประวัติไม่ได้: {e}")
+
+st.markdown("</div>", unsafe_allow_html=True)
