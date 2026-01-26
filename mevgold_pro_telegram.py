@@ -228,43 +228,117 @@ def send_telegram(text:str):
 
 # ===== 6) FETCH (with graceful fallback) =====
 def fetch_assoc_raw():
-    r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
-    r.raise_for_status()
-    r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "lxml")  # เร็ว/ทน
-
-    def num(sel):
-        t = soup.select_one(sel)
-        txt = t.get_text(strip=True) if t else ""
-        if not txt: return None
-        try: return float(txt.replace(",",""))
-        except: return None
-
-    data = {
-        "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
-        "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
-        "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
-        "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
-        "times":    None,
-        "asof_time": None,
+    # เป้าหมาย: เว็บสมาคมค้าทองคำ (Official)
+    # เทคนิค: ดึงข้อมูลจาก __NEXT_DATA__ (JSON ที่ซ่อนอยู่ในหน้าเว็บ Next.js)
+    URL = "https://www.goldtraders.or.th/"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html",
+        "Cache-Control": "no-cache"
     }
 
-    ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
-    if ts:
-        ts_text = ts.get_text(strip=True)
-        m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
-        if m:
-            try: data["times"] = int(m.group(1))
-            except: data["times"] = None
-        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
-        if m2:
-            data["asof_time"] = m2.group(1)
+    try:
+        r = requests.get(URL, headers=headers, timeout=FETCH_TIMEOUT)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        raise RuntimeError(f"Connect Error: {e}")
 
-    # ถ้าไม่พบ price เลย ถือว่าล้มเหลว
-    if data["bar_buy"] is None and data["bar_sell"] is None:
-        raise RuntimeError("no_price_elements")
+    # 1. ค้นหา Script ที่เก็บข้อมูลลับ (__NEXT_DATA__)
+    script_tag = soup.find("script", id="__NEXT_DATA__")
+    
+    if not script_tag:
+        # Fallback: ถ้าหาไม่เจอ อาจจะเป็นเพราะหน้าเว็บเปลี่ยนโครงสร้างกะทันหัน
+        st.error("❌ หา __NEXT_DATA__ ไม่เจอ (เว็บสมาคมอาจไม่ใช่ Next.js หรือเปลี่ยนระบบ)")
+        raise RuntimeError("structure_changed_no_next_data")
+
+    # 2. แปลงข้อความใน Script ให้เป็น Dictionary (JSON)
+    try:
+        json_data = json.loads(script_tag.string)
+    except:
+        raise RuntimeError("json_parse_error")
+
+    # 3. ฟังก์ชันช่วยค้นหาข้อมูลใน JSON (เพราะโครงสร้างมันซับซ้อน เราจะวนหาเอา)
+    # เราจะหา Dict ที่มี key ชื่อ 'blSell' (Bar Sell - ทองคำแท่งขายออก)
+    def find_gold_data(data):
+        if isinstance(data, dict):
+            # เช็คว่าเจอ key ที่เราตามหาไหม (เว็บสมาคมใช้ชื่อตัวแปรประมาณนี้)
+            keys = [k.lower() for k in data.keys()]
+            if 'blsell' in keys and 'blbuy' in keys:
+                return data
+            # ถ้าไม่เจอ ให้วนหาในลูกๆ ต่อ
+            for v in data.values():
+                res = find_gold_data(v)
+                if res: return res
+        elif isinstance(data, list):
+            for item in data:
+                res = find_gold_data(item)
+                if res: return res
+        return None
+
+    # เริ่มค้นหา
+    gold_info = find_gold_data(json_data)
+
+    if not gold_info:
+        # ถ้าหาไม่เจอจริงๆ ลองแสดง JSON บางส่วนเพื่อ Debug (ถ้าจำเป็น)
+        raise RuntimeError("json_structure_changed_key_not_found")
+
+    # 4. แกะข้อมูลออกมา (Key อาจจะเป็นตัวเล็กหรือตัวใหญ่ ต้องระวัง)
+    # ฟังก์ชันช่วยดึงค่าแบบไม่สน Case (เช่น blSell หรือ BLSell ก็ได้)
+    def get_val(d, key_part):
+        for k, v in d.items():
+            if key_part.lower() == k.lower():
+                try: return float(str(v).replace(",", ""))
+                except: return None
+        return None
+    
+    def get_str(d, key_part):
+        for k, v in d.items():
+            if key_part.lower() == k.lower():
+                return str(v)
+        return ""
+
+    data = {
+        "bar_buy":  get_val(gold_info, "blBuy"),
+        "bar_sell": get_val(gold_info, "blSell"),
+        "orn_buy":  get_val(gold_info, "omBuy"),
+        "orn_sell": get_val(gold_info, "omSell"),
+        "times":    None,
+        "asof_time": None
+    }
+
+    # 5. แกะเวลาและครั้งที่
+    # ข้อมูลเวลามักจะอยู่ใน key ชื่อ updateDate หรือ timeUpdate
+    time_str = get_str(gold_info, "updateDate") or get_str(gold_info, "timeUpdate") or datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+    
+    # พยายามแกะ "เวลา" (HH:MM)
+    m_time = re.search(r"(\d{1,2}:\d{2})", time_str)
+    if m_time:
+        data["asof_time"] = m_time.group(1)
+    else:
+        # ถ้าไม่มีใน string ลองดูว่าเป็น datetime object หรือไม่
+        try:
+            dt = datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%S") # รูปแบบมาตรฐาน JSON
+            data["asof_time"] = dt.strftime("%H:%M")
+        except:
+            data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
+
+    # พยายามแกะ "ครั้งที่"
+    # บางทีมันแยกเป็น key ชื่อ 'times' หรือ 'round'
+    raw_times = get_val(gold_info, "times") or get_val(gold_info, "round")
+    if raw_times:
+        data["times"] = int(raw_times)
+    else:
+        # ถ้าไม่มี key แยก ลองหาจาก text
+        m_round = re.search(r"ครั้งที่\s?(\d+)", time_str)
+        if m_round: data["times"] = int(m_round.group(1))
+
+    # ตรวจสอบครั้งสุดท้าย
+    if data["bar_sell"] is None:
+        raise RuntimeError("no_price_data_in_json")
+
     return data
-
 def fetch_assoc_safe():
     status = {"source": "live", "message": ""}
     try:
