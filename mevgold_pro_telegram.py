@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold (Final: HSH Sniper + Tuned Fallback)
-# Priority: 1.HuaSengHeng (Association Row) -> 2.ThaiGold -> 3.Yahoo Calc (Calibration -250)
+# mevgold_pro_telegram.py — MeVGold (Final Fix: Association Row Strict Mode)
+# Priority: 1.HuaSengHeng (Association Row ONLY) -> 2.ThaiGold -> 3.Yahoo Calc (Calibration -250)
 
 import os, json, re, csv
 from datetime import datetime
@@ -185,7 +185,7 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (HSH Sniper + Tuned Calc) =====
+# ===== 4) FETCH ENGINE (HSH Sniper Strict + Tuned Calc) =====
 
 def fetch_huasengheng_sniper():
     url = "https://www.huasengheng.com/"
@@ -195,31 +195,36 @@ def fetch_huasengheng_sniper():
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     
-    # เจาะหาคำว่า "สมาคมฯ"
+    # 1. เจาะหา "สมาคมฯ"
     target = soup.find(string=re.compile("สมาคมฯ"))
     if not target:
         target = soup.find(string=re.compile("ฮั่วเซ่งเฮง"))
         
     if target:
-        # ถอยออกมาหา Container ใหญ่ แล้วแยกคำด้วยช่องว่าง (แก้บั๊กเลขติดกัน)
+        # ถอยออกมาหา Container ใหญ่
         container = target.parent.parent.parent 
         text_chunk = container.get_text(separator=" ", strip=True)
+        
+        # 🟢 คีย์สำคัญ: ตัดข้อความเอาเฉพาะ "หลังคำว่า สมาคมฯ" เป็นต้นไป
+        # เพื่อป้องกันไม่ให้ไปหยิบราคาของฮั่วเซ่งเฮง (ซึ่งอยู่บรรทัดบน)
+        idx = text_chunk.find("สมาคมฯ")
+        if idx != -1:
+            text_chunk = text_chunk[idx:] # ตัดหางปล่อยวัดเลย
         
         matches = re.findall(r"([\d,]+\.?\d*)", text_chunk)
         prices = []
         for m in matches:
             try:
                 val = float(m.replace(",",""))
-                # ✅ Filter: รับเฉพาะช่วง 70,000 - 95,000 เท่านั้น
-                # ตัดเลขปี 2569 หรือ เวลาทิ้ง
+                # Filter: รับเฉพาะช่วง 70,000 - 95,000 เท่านั้น
                 if 70000 <= val <= 95000:
                     prices.append(val)
             except: pass
             
         if len(prices) >= 2:
             return {
-                "bar_buy": prices[0], 
-                "bar_sell": prices[1],
+                "bar_buy": prices[0],  # ตัวแรกหลังคำว่าสมาคม = ราคารับซื้อสมาคม
+                "bar_sell": prices[1], # ตัวที่สอง = ราคาขายออกสมาคม
                 "orn_buy": prices[0] - 1200, 
                 "orn_sell": prices[1] + 500,
                 "times": None,
@@ -445,7 +450,7 @@ if (is_change or is_recovery) and have_numbers_now:
             f"ขายออก: <b>{escape(f'{cur_sell:,.0f}')}</b> ({fmt_signed(tick_sell)}) {extra_txt}\n"
             f"เวลา {display_time} น."
         )
-        send_telegram(msg)
+        send_telegram(msg) # เอา # ออกให้แล้วครับ
 
 # ===== 9) SAVE STATE =====
 new_state = dict(cur or {})
