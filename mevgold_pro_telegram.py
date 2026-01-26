@@ -210,79 +210,77 @@ def send_telegram(text:str):
 
 # ===== 6) FETCH (ULTRA ROBUST) =====
 def fetch_assoc_raw():
-    # 1. Header ปลอมตัวให้เนียนที่สุด
+    # เปลี่ยนแหล่งข้อมูลเป็นเว็บที่บอทอ่านง่าย (Mirror Site)
+    # เว็บนี้แสดงราคาจากสมาคมฯ แบบ Realtime และเป็น HTML ปกติ
+    NEW_SOURCE_URL = "https://xn--42cah7d0c0nb001.com/"
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "th-TH,th;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache"
+        "Accept": "text/html",
+        "Cache-Control": "no-cache"
     }
 
-    r = requests.get(SOURCE_URL, headers=headers, timeout=FETCH_TIMEOUT)
+    r = requests.get(NEW_SOURCE_URL, headers=headers, timeout=FETCH_TIMEOUT)
     r.raise_for_status()
+    r.encoding = "utf-8" # เว็บนี้ใช้ utf-8 ชัวร์
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    # 2. สูตรลับ: ลองถอดรหัส 2 แบบ (UTF-8 และ CP874)
-    # เพราะบางทีเว็บส่ง Header UTF-8 แต่ไส้ในเป็น Thai Windows-874
-    content_html = ""
-    used_encoding = ""
-    
-    # ลองเชื่อ Header ก่อน
-    try:
-        r.encoding = r.apparent_encoding or "utf-8"
-        content_html = r.text
-        used_encoding = r.encoding
-    except:
-        pass
-
-    soup = BeautifulSoup(content_html, "html.parser")
-    
-    # ตรวจสอบว่าอ่านออกไหม? ถ้าหาคำไทยไม่เจอ ให้ลองถอดรหัสแบบโบราณ (CP874)
-    if not soup.find(string=re.compile("ทองคำแท่ง")):
-        try:
-            content_html = r.content.decode("cp874", errors="ignore")
-            soup = BeautifulSoup(content_html, "html.parser")
-            used_encoding = "forced-cp874"
-        except:
-            pass
-
-    # 3. ฟังก์ชันเจาะหาข้อมูล (หาจาก Text ไม่สน ID)
-    def get_price(label, idx):
+    # ฟังก์ชันเจาะหาข้อมูลแบบ Generic
+    def get_price(label, col_idx):
+        # หาคำว่า "ทองคำแท่ง" หรือ "ทองรูปพรรณ"
         found = soup.find(string=re.compile(label))
         if not found: return None
+        
+        # ถอยหา <tr>
         row = found.find_parent("tr")
         if not row: return None
+        
+        # หา <td>
         cols = row.find_all("td")
-        if len(cols) > idx:
-            txt = cols[idx].get_text(strip=True).replace(",", "")
+        if len(cols) > col_idx:
+            # ลบลูกน้ำ ลบคำว่าบาท ออกให้หมด เอาแค่ตัวเลข
+            txt = cols[col_idx].get_text(strip=True).replace(",", "")
+            # บางทีอาจมีวงเล็บราคาเปลี่ยนแปลง ให้ตัดออก
+            txt = re.split(r'\s|\(', txt)[0] 
             try: return float(txt)
             except: return None
         return None
 
     data = {
-        "bar_buy":  get_price("ทองคำแท่ง", 1),
-        "bar_sell": get_price("ทองคำแท่ง", 2),
+        "bar_buy":  get_price("ทองคำแท่ง", 1), # ช่อง 1 = รับซื้อ
+        "bar_sell": get_price("ทองคำแท่ง", 2), # ช่อง 2 = ขายออก
         "orn_buy":  get_price("ทองรูปพรรณ", 1),
         "orn_sell": get_price("ทองรูปพรรณ", 2),
         "times":    None,
         "asof_time": None,
     }
 
-    # 4. ดึงเวลา
-    t_node = soup.find(string=re.compile(r"เวลา\s?\d{1,2}:\d{2}"))
-    if t_node:
-        txt = t_node.strip()
-        m1 = re.search(r"ครั้งที่\s?(\d+)", txt)
+    # แกะเวลา: "ประกาศครั้งที่ 2 ประจำวันที่ ... เวลา 10:00 น."
+    # เว็บนี้มักใส่ข้อมูลเวลาไว้ใน div หรือ h3 ด้านบนๆ
+    time_text = ""
+    # พยายามหาจาก header หรือ text ที่มีคำว่า "เวลา"
+    for tag in soup.find_all(["div", "h3", "span"]):
+        txt = tag.get_text(strip=True)
+        if "ประกาศครั้งที่" in txt and "เวลา" in txt:
+            time_text = txt
+            break
+            
+    if time_text:
+        # แกะครั้งที่
+        m1 = re.search(r"ครั้งที่\s?(\d+)", time_text)
         if m1: data["times"] = int(m1.group(1))
-        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
+        
+        # แกะเวลา
+        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", time_text)
         if m2: data["asof_time"] = m2.group(1)
 
-    # 5. ถ้ายังหาไม่เจออีก -> แสดง Debug HTML ให้เจ้าของแอปดู
+    # Fallback: ถ้าหาเวลาไม่เจอ ให้ใช้เวลาปัจจุบันไปก่อน (เพื่อให้บอทไม่พัง)
+    if data["asof_time"] is None:
+         data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
+
+    # ตรวจสอบความถูกต้อง
     if data["bar_buy"] is None:
-        st.error(f"❌ บอทอ่านข้อมูลไม่ได้ (Encoding: {used_encoding})")
-        with st.expander("🔎 กดดูหน้าเว็บที่บอทเห็น (Debug HTML)", expanded=False):
-            st.code(soup.prettify()[:5000], language='html')
-        raise RuntimeError(f"Parse Failed ({used_encoding})")
+        raise RuntimeError("no_price_elements (Source: xn--42cah7d0c0nb001.com)")
 
     return data
 
