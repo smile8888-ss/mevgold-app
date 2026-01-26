@@ -228,115 +228,84 @@ def send_telegram(text:str):
 
 # ===== 6) FETCH (with graceful fallback) =====
 def fetch_assoc_raw():
-    # เป้าหมาย: เว็บสมาคมค้าทองคำ (Official)
-    # เทคนิค: ดึงข้อมูลจาก __NEXT_DATA__ (JSON ที่ซ่อนอยู่ในหน้าเว็บ Next.js)
-    URL = "https://www.goldtraders.or.th/"
+    # ใช้เว็บ Mirror ที่เสถียรที่สุด (ทองคำราคา.com)
+    # แปลง URL เป็น Punycode โดยตรง เพื่อแก้ปัญหา DNS Error บน Server นอก
+    # นี่คือลิงก์ของ "ราคาทองวันนี้.com"
+    MIRROR_URL = "https://xn--42cah7d0c0nb001.com/"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html",
+        "Accept": "text/html,application/xhtml+xml",
         "Cache-Control": "no-cache"
     }
 
     try:
-        r = requests.get(URL, headers=headers, timeout=FETCH_TIMEOUT)
+        # ใช้ session เพื่อความเสถียร
+        s = requests.Session()
+        r = s.get(MIRROR_URL, headers=headers, timeout=25)
         r.raise_for_status()
+        r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
     except Exception as e:
-        raise RuntimeError(f"Connect Error: {e}")
+        # ถ้าเว็บนี้ล่ม ให้ลองอีกเว็บสำรอง (Sanook Money)
+        try:
+            r = requests.get("https://money.sanook.com/gold/", headers=headers, timeout=25)
+            r.encoding = "utf-8"
+            soup = BeautifulSoup(r.text, "html.parser")
+        except:
+            raise RuntimeError(f"All sources failed: {e}")
 
-    # 1. ค้นหา Script ที่เก็บข้อมูลลับ (__NEXT_DATA__)
-    script_tag = soup.find("script", id="__NEXT_DATA__")
+    # --- สูตรการแกะข้อมูลแบบ "กวาดเรียบ" (Regex Search) ---
+    # วิธีนี้จะไม่พังแม้เว็บจะเปลี่ยน ID หรือเปลี่ยนชื่อ Class
     
-    if not script_tag:
-        # Fallback: ถ้าหาไม่เจอ อาจจะเป็นเพราะหน้าเว็บเปลี่ยนโครงสร้างกะทันหัน
-        st.error("❌ หา __NEXT_DATA__ ไม่เจอ (เว็บสมาคมอาจไม่ใช่ Next.js หรือเปลี่ยนระบบ)")
-        raise RuntimeError("structure_changed_no_next_data")
+    text_blob = soup.get_text(separator=" ", strip=True)
 
-    # 2. แปลงข้อความใน Script ให้เป็น Dictionary (JSON)
-    try:
-        json_data = json.loads(script_tag.string)
-    except:
-        raise RuntimeError("json_parse_error")
+    def extract_prices(label_name):
+        # หาคำว่า "ทองคำแท่ง" ตามด้วยตัวเลขเงิน 2 ก้อน (รับซื้อ, ขายออก)
+        # รองรับรูปแบบ: "ทองคำแท่ง 96.5% รับซื้อ 43,000.00 ขายออก 43,100.00"
+        # Regex: หาตัวเลขที่มีลูกน้ำ (xx,xxx)
+        pattern = re.compile(rf"{label_name}.*?(\d{{2}},\d{{3}}).*?(\d{{2}},\d{{3}})")
+        match = pattern.search(text_blob)
+        if match:
+            try:
+                p1 = float(match.group(1).replace(",", "")) # รับซื้อ
+                p2 = float(match.group(2).replace(",", "")) # ขายออก
+                return p1, p2
+            except: pass
+        return None, None
 
-    # 3. ฟังก์ชันช่วยค้นหาข้อมูลใน JSON (เพราะโครงสร้างมันซับซ้อน เราจะวนหาเอา)
-    # เราจะหา Dict ที่มี key ชื่อ 'blSell' (Bar Sell - ทองคำแท่งขายออก)
-    def find_gold_data(data):
-        if isinstance(data, dict):
-            # เช็คว่าเจอ key ที่เราตามหาไหม (เว็บสมาคมใช้ชื่อตัวแปรประมาณนี้)
-            keys = [k.lower() for k in data.keys()]
-            if 'blsell' in keys and 'blbuy' in keys:
-                return data
-            # ถ้าไม่เจอ ให้วนหาในลูกๆ ต่อ
-            for v in data.values():
-                res = find_gold_data(v)
-                if res: return res
-        elif isinstance(data, list):
-            for item in data:
-                res = find_gold_data(item)
-                if res: return res
-        return None
+    # ดึงราคา
+    bar_buy, bar_sell = extract_prices("ทองคำแท่ง")
+    orn_buy, orn_sell = extract_prices("ทองรูปพรรณ")
 
-    # เริ่มค้นหา
-    gold_info = find_gold_data(json_data)
-
-    if not gold_info:
-        # ถ้าหาไม่เจอจริงๆ ลองแสดง JSON บางส่วนเพื่อ Debug (ถ้าจำเป็น)
-        raise RuntimeError("json_structure_changed_key_not_found")
-
-    # 4. แกะข้อมูลออกมา (Key อาจจะเป็นตัวเล็กหรือตัวใหญ่ ต้องระวัง)
-    # ฟังก์ชันช่วยดึงค่าแบบไม่สน Case (เช่น blSell หรือ BLSell ก็ได้)
-    def get_val(d, key_part):
-        for k, v in d.items():
-            if key_part.lower() == k.lower():
-                try: return float(str(v).replace(",", ""))
-                except: return None
-        return None
+    # ดึงเวลาและครั้งที่
+    # พยายามหาคำว่า "ครั้งที่ X" และ "เวลา XX:XX" จากทั่วทั้งหน้า
+    times = None
+    asof_time = None
     
-    def get_str(d, key_part):
-        for k, v in d.items():
-            if key_part.lower() == k.lower():
-                return str(v)
-        return ""
+    m_times = re.search(r"ครั้งที่\s?(\d+)", text_blob)
+    if m_times: times = int(m_times.group(1))
+
+    m_time = re.search(r"เวลา\s?(\d{1,2}:\d{2})", text_blob)
+    if m_time: asof_time = m_time.group(1)
+
+    # Fallback: ถ้าหาเวลาไม่เจอ ให้ใช้วันนี้
+    if asof_time is None:
+        asof_time = datetime.now(TZ).strftime("%H:%M")
 
     data = {
-        "bar_buy":  get_val(gold_info, "blBuy"),
-        "bar_sell": get_val(gold_info, "blSell"),
-        "orn_buy":  get_val(gold_info, "omBuy"),
-        "orn_sell": get_val(gold_info, "omSell"),
-        "times":    None,
-        "asof_time": None
+        "bar_buy":  bar_buy,
+        "bar_sell": bar_sell,
+        "orn_buy":  orn_buy,
+        "orn_sell": orn_sell,
+        "times":    times,
+        "asof_time": asof_time,
     }
 
-    # 5. แกะเวลาและครั้งที่
-    # ข้อมูลเวลามักจะอยู่ใน key ชื่อ updateDate หรือ timeUpdate
-    time_str = get_str(gold_info, "updateDate") or get_str(gold_info, "timeUpdate") or datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
-    
-    # พยายามแกะ "เวลา" (HH:MM)
-    m_time = re.search(r"(\d{1,2}:\d{2})", time_str)
-    if m_time:
-        data["asof_time"] = m_time.group(1)
-    else:
-        # ถ้าไม่มีใน string ลองดูว่าเป็น datetime object หรือไม่
-        try:
-            dt = datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%S") # รูปแบบมาตรฐาน JSON
-            data["asof_time"] = dt.strftime("%H:%M")
-        except:
-            data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
-
-    # พยายามแกะ "ครั้งที่"
-    # บางทีมันแยกเป็น key ชื่อ 'times' หรือ 'round'
-    raw_times = get_val(gold_info, "times") or get_val(gold_info, "round")
-    if raw_times:
-        data["times"] = int(raw_times)
-    else:
-        # ถ้าไม่มี key แยก ลองหาจาก text
-        m_round = re.search(r"ครั้งที่\s?(\d+)", time_str)
-        if m_round: data["times"] = int(m_round.group(1))
-
-    # ตรวจสอบครั้งสุดท้าย
+    # ตรวจสอบความถูกต้อง (ต้องได้ราคาทองแท่งขายออก)
     if data["bar_sell"] is None:
-        raise RuntimeError("no_price_data_in_json")
+        # Debug: ถ้าหาไม่เจอ ให้แจ้งเตือนแต่อย่าแอปพัง (Return None ให้ระบบจัดการ)
+        raise RuntimeError("no_price_elements (Regex failed on Mirror Site)")
 
     return data
 def fetch_assoc_safe():
