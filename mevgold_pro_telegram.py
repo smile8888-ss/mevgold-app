@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold (Official Price Hunter)
-# Priority: 1.HuaSengHeng (Association Row) -> 2.ThaiGold.info -> 3.Yahoo Calc (Fallback)
+# mevgold_pro_telegram.py — MeVGold (Fixed: HSH Year-Time Bug)
+# Priority: 1.HuaSengHeng (Smart Filter) -> 2.ThaiGold.info -> 3.Yahoo Calc
 
 import os, json, re, csv
 from datetime import datetime
@@ -186,13 +186,16 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (HSH -> ThaiGold -> Calc) =====
+# ===== 4) FETCH ENGINE (Fixed Logic) =====
 
-def extract_numbers(txt, key_start, key_end=None):
-    # ฟังก์ชั่นช่วยแกะตัวเลขออกจากข้อความมั่วๆ
-    # มองหาตัวเลขที่มีคอมม่า เช่น 74,850
+def extract_numbers(soup_or_text, key_start, key_end=None):
+    # ปรับปรุง: ใช้ separator=" " เพื่อป้องกันตัวเลขติดกัน (เช่น ปี 2569 ติดกับเวลา)
+    if isinstance(soup_or_text, BeautifulSoup):
+        txt = soup_or_text.get_text(separator=" ", strip=True)
+    else:
+        txt = str(soup_or_text)
+
     try:
-        # ตัดข้อความให้แคบลง เริ่มจาก key_start
         start_idx = txt.find(key_start)
         if start_idx == -1: return None, None
         
@@ -201,14 +204,15 @@ def extract_numbers(txt, key_start, key_end=None):
             end_idx = sub_txt.find(key_end)
             if end_idx != -1: sub_txt = sub_txt[:end_idx]
             
-        # หาตัวเลขทั้งหมดในโซนนั้น
         matches = re.findall(r"([\d,]+\.?\d*)", sub_txt)
-        # กรองเฉพาะตัวเลขที่ดูเหมือนราคาทอง (มากกว่า 30,000)
         valid_nums = []
         for m in matches:
             try:
                 val = float(m.replace(",",""))
-                if val > 30000: valid_nums.append(val)
+                # ✅ กรองเฉพาะราคาที่สมเหตุสมผล (40,000 - 90,000)
+                # ป้องกันเลขปี (2569) หรือเลขเวลาที่มาผสมกัน
+                if 40000 <= val <= 90000:
+                    valid_nums.append(val)
             except: pass
             
         if len(valid_nums) >= 2:
@@ -217,29 +221,29 @@ def extract_numbers(txt, key_start, key_end=None):
     return None, None
 
 def fetch_huasengheng():
-    # Source 1: ฮั่วเซ่งเฮง (เจาะบรรทัด "สมาคมฯ")
+    # Source 1: ฮั่วเซ่งเฮง
     url = "https://www.huasengheng.com/"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
     
     r = requests.get(url, headers=headers, timeout=10)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
-    txt = soup.get_text() # แปลง html เป็นข้อความล้วน
     
-    # 1. ลองหาคำว่า "สมาคมฯ" (ตามรูป screenshot)
-    buy, sell = extract_numbers(txt, "สมาคมฯ", "อัปเดตล่าสุด")
+    # 1. ลองหาคำว่า "สมาคมฯ"
+    # ส่ง soup เข้าไปเลย เพื่อให้ฟังก์ชันจัดการ get_text แบบมีช่องว่าง
+    buy, sell = extract_numbers(soup, "สมาคมฯ", "อัปเดตล่าสุด")
     label = "สมาคมฯ (via HSH)"
     
     if not buy:
-        # 2. ถ้าไม่เจอสมาคมฯ เอาราคา "ฮั่วเซ่งเฮง" ก็ได้ (ใกล้เคียงสุดๆ)
-        buy, sell = extract_numbers(txt, "ฮั่วเซ่งเฮง", "สมาคมฯ")
+        # 2. ถ้าไม่เจอ เอาราคา "ฮั่วเซ่งเฮง"
+        buy, sell = extract_numbers(soup, "ฮั่วเซ่งเฮง", "สมาคมฯ")
         label = "ฮั่วเซ่งเฮง"
         
     if buy and sell:
         return {
             "bar_buy": buy, "bar_sell": sell,
-            "orn_buy": buy - 1200, # ประมาณการ (เว็บ HSH หน้าแรกมักไม่โชว์รูปพรรณ)
-            "orn_sell": sell + 500, # สูตรมาตรฐานสมาคม
+            "orn_buy": buy - 1200, 
+            "orn_sell": sell + 500,
             "times": None,
             "asof_time": datetime.now(TZ).strftime("%H:%M"),
             "source_label": label
@@ -247,20 +251,18 @@ def fetch_huasengheng():
     raise ValueError("HSH parsing failed")
 
 def fetch_thaigold_info():
-    # Source 2: ThaiGold.info (เว็บรวมราคาทอง มักไม่บล็อก)
+    # Source 2: ThaiGold.info
     url = "https://thaigold.info/"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(r.text, "html.parser")
-    txt = soup.get_text()
     
-    # เว็บนี้มักขึ้นต้นด้วย "ทองคำแท่ง 96.5%"
-    buy, sell = extract_numbers(txt, "ทองคำแท่ง 96.5%")
+    buy, sell = extract_numbers(soup, "ทองคำแท่ง 96.5%")
     
     if buy and sell:
         return {
             "bar_buy": buy, "bar_sell": sell,
-            "orn_buy": (buy * 0.98), # ประมาณ
+            "orn_buy": (buy * 0.98),
             "orn_sell": sell + 500,
             "times": None,
             "asof_time": datetime.now(TZ).strftime("%H:%M"),
@@ -269,7 +271,7 @@ def fetch_thaigold_info():
     raise ValueError("ThaiGold parsing failed")
 
 def calculate_yahoo_fallback():
-    # Source 3: Yahoo Finance (กันตาย)
+    # Source 3: Yahoo Finance
     tickers = yf.Tickers("GC=F THB=X")
     spot = tickers.tickers["GC=F"].history(period="1d")["Close"].iloc[-1]
     thb = tickers.tickers["THB=X"].history(period="1d")["Close"].iloc[-1]
