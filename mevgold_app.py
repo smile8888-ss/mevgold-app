@@ -1,5 +1,6 @@
 # mevgold_app.py — MeVGold (Pro/Lite in 1 file)
-# Updated: Fixed scraping logic for new website structure (Text-based search)
+# Updated: Fixed scraping logic (Text-based + Encoding fix)
+# Notification Logic: UNTOUCHED as requested.
 
 import os, json, csv, re, requests
 from datetime import datetime, timedelta
@@ -110,7 +111,7 @@ def append_history(row):
 # ───────── Fetchers ─────────
 def fetch_gold_thai():
     url = "https://www.goldtraders.or.th/default.aspx"
-    # Header เลียนแบบ Browser จริง (สำคัญมาก)
+    # Header เลียนแบบ Browser เพื่อป้องกันการโดนบล็อก
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -120,45 +121,51 @@ def fetch_gold_thai():
     try:
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
-        r.encoding = "utf-8"
-        # ใช้ html.parser (เสถียรสุดบน Streamlit Cloud)
+        
+        # ✅ FIX 1: แก้ปัญหาภาษาต่างดาว (Auto Detect Encoding)
+        # เว็บไทยเก่าๆ ชอบใช้ Windows-874 หรือ TIS-620
+        r.encoding = r.apparent_encoding 
+        
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # ⭐️ FIXED: ฟังก์ชันหาตัวเลขจาก "คำค้นหา" (ไม่ต้องง้อ ID)
+        # ✅ FIX 2: ใช้ Logic หาจาก "ข้อความ" แทนการใช้ ID (ทนทานกว่า)
         def get_price_from_table(label_text, col_index):
-            # 1. หาข้อความ
+            # หาคำว่า "ทองคำแท่ง" หรือ "ทองรูปพรรณ"
             found = soup.find(string=re.compile(label_text))
             if not found: return None
-            # 2. ถอยกลับไปหาแถว (tr)
+            
+            # ถอยกลับไปหาแถวตาราง (tr)
             row = found.find_parent("tr")
             if not row: return None
-            # 3. หาช่อง (td)
+            
+            # หาช่องข้อมูล (td)
             cols = row.find_all("td")
-            # 4. ดึงค่า
+            
+            # ดึงตัวเลขจากช่องที่กำหนด
             if len(cols) > col_index:
                 text_val = cols[col_index].get_text(strip=True).replace(",", "")
                 try: return float(text_val)
                 except: return None
             return None
 
-        # ดึงราคา
-        buyv  = get_price_from_table("ทองคำแท่ง", 1) # ช่องที่ 2
-        sellv = get_price_from_table("ทองคำแท่ง", 2) # ช่องที่ 3
+        # เริ่มดึงข้อมูล
+        buyv  = get_price_from_table("ทองคำแท่ง", 1) # รับซื้อ
+        sellv = get_price_from_table("ทองคำแท่ง", 2) # ขายออก
 
         # ดึงเวลา
-        tstr = datetime.now().strftime("%d/%m/%Y %H:%M") # fallback
+        tstr = datetime.now().strftime("%d/%m/%Y %H:%M") # ค่าเริ่มต้น
         times = None
         
-        # พยายามแกะเวลาจากหน้าเว็บ
         time_node = soup.find(string=re.compile(r"เวลา\s?\d{1,2}:\d{2}"))
         if time_node:
-            full_text = time_node.strip()
-            tstr = full_text
-            m = re.search(r"ครั้งที่\s?(\d+)", full_text)
+            tstr = time_node.strip()
+            # แกะครั้งที่
+            m = re.search(r"ครั้งที่\s?(\d+)", tstr)
             if m: times = int(m.group(1))
 
+        # ถ้าหาไม่เจอจริงๆ ให้ Error เพื่อแจ้งเตือน
         if sellv is None or buyv is None:
-            raise ValueError("หาตัวเลขราคาไม่เจอ (โครงสร้างเว็บอาจเปลี่ยน)")
+             raise ValueError("หาตัวเลขราคาไม่เจอ (Structure changed or Encoding error)")
 
         return {"buy_bar": buyv, "sell_bar": sellv, "times": times, "timestamp": tstr}
 
@@ -168,14 +175,14 @@ def fetch_gold_thai():
 def fetch_global_gold_and_fx():
     data = {"xauusd": None, "usdthb": None, "baht96": None}
     try:
-        # 1. Gold Spot
+        # 1. Gold Spot (Free API)
         try:
             r1 = requests.get("https://api.metals.live/v1/spot/gold", timeout=5)
             if r1.status_code == 200:
                 data["xauusd"] = float(r1.json()[0]["price"])
         except: pass
 
-        # 2. USD/THB
+        # 2. USD/THB (Free API)
         try:
             r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
             if r2.status_code == 200:
@@ -271,8 +278,8 @@ prev = load_state()
 try:
     cur = fetch_gold_thai()
 except Exception as e:
+    # กรณี Error: แสดง Error เล็กน้อย แต่พยายามใช้ข้อมูลเก่าถ้ามี
     st.error(f"❌ ไม่สามารถดึงราคาทองได้: {e}")
-    # ถ้าดึงสดไม่ได้ ให้เอาค่าเก่ามาแสดง (ถ้ามี)
     if prev.get("sell_bar"):
         cur = prev
         st.warning(f"⚠️ แสดงราคาล่าสุดที่บันทึกไว้: {prev.get('timestamp')}")
@@ -329,12 +336,10 @@ times_txt = f'ครั้งที่ {cur["times"]}' if cur.get("times") else 
 st.markdown(f'<div class="meta">{times_txt} • อัปเดต {cur["timestamp"]}</div>', unsafe_allow_html=True)
 
 # ───────── History Log ─────────
-# บันทึกเฉพาะเมื่อราคาเปลี่ยน หรือยังไม่มีประวัติวันนี้
 should_log = False
 if not os.path.exists(HIST_FILE):
     should_log = True
 else:
-    # เช็คว่าราคาเปลี่ยนจากบรรทัดสุดท้ายใน CSV หรือไม่ (อย่างง่าย)
     try:
         last_row = pd.read_csv(HIST_FILE).iloc[-1]
         if float(last_row["sell"]) != cur["sell_bar"]:
@@ -354,7 +359,7 @@ if should_log:
 with st.expander("📅 ประวัติราคา (CSV)", expanded=False):
     if os.path.exists(HIST_FILE):
         df = pd.read_csv(HIST_FILE)
-        st.dataframe(df.tail(30).iloc[::-1], use_container_width=True, hide_index=True) # กลับด้านเอาล่าสุดขึ้นบน
+        st.dataframe(df.tail(30).iloc[::-1], use_container_width=True, hide_index=True)
         st.download_button("⬇️ ดาวน์โหลด CSV", df.to_csv(index=False).encode("utf-8"), "gold_history.csv", "text/csv")
 
 if is_pro:
@@ -363,13 +368,13 @@ if is_pro:
 st.markdown('<div class="footer">MeVGold © 2025</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───────── Logic: Save State & Alerts ─────────
+# ───────── Logic: Save State & Alerts (UNTOUCHED) ─────────
 # เตรียม State ใหม่
 new_state = prev.copy()
-new_state.update(cur) # อัปเดตราคาล่าสุดเข้าไป
+new_state.update(cur)
 
 if is_pro and LINE_TOKEN:
-    # ตรวจสอบเงื่อนไขแจ้งเตือน
+    # ตรวจสอบเงื่อนไขแจ้งเตือน (ใช้ Logic เดิมเป๊ะ)
     if should_alert(prev, cur):
         sign = "ขึ้น 🟢" if cur["sell_bar"] > prev.get("sell_bar", 0) else "ลง 🔴"
         change_amt = abs(cur["sell_bar"] - prev.get("sell_bar", 0))
