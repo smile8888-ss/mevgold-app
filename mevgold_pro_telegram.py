@@ -1,15 +1,15 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (CloudScraper Edition)
-# Fix: Replaced requests with cloudscraper to bypass IP blocking
-# Sources: 1.Official, 2.NamChiang, 3.ThaiGold.info (Aggregator)
+# mevgold_pro_telegram.py — MeVGold 96.5% (Calculation Edition)
+# Fix: Calculate Thai Gold Price from Spot & USDTHB (No more blocking!)
+# Source: Yahoo Finance (yfinance)
 
 import os, json, re, csv
 from datetime import datetime
 from html import escape
 from zoneinfo import ZoneInfo
+import math
 
 import streamlit as st
-import cloudscraper # ⚡️ พระเอกของเรา
-from bs4 import BeautifulSoup
+import yfinance as yf # ⚡️ พระเอกคนใหม่
 import pandas as pd
 
 # ===== 1) Config =====
@@ -27,8 +27,6 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
-SOURCE_URL = "https://www.goldtraders.or.th/default.aspx"
-FETCH_TIMEOUT = 25
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
@@ -133,6 +131,8 @@ def th_now(dt: datetime) -> str:
     return f"{TH_DOW[dt.weekday()]} {dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
 
 def is_market_closed(now: datetime) -> bool:
+    # ตลาดทองโลกปิดเสาร์-อาทิตย์ (แต่ crypto เปิดตลอด)
+    # สำหรับทองไทย ปกติปิด 17:30
     return (now.hour > 17) or (now.hour == 17 and now.minute >= 30)
 
 def load_state():
@@ -178,7 +178,6 @@ def fmt_delta_for_badge(n:int) -> str:
 
 def send_telegram(text:str):
     if not (TG_TOKEN and TG_CHAT): return
-    # Telegram ใช้ requests ปกติได้ ไม่ค่อยบล็อก
     try:
         import requests
         requests.post(
@@ -188,118 +187,70 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (CloudScraper Edition) =====
-def fetch_assoc_raw():
-    # สร้างหัวเจาะ CloudScraper (ทะลวง WAF/Cloudflare)
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-
-    # --- SOURCE 1: Official ---
-    try:
-        r = scraper.get(SOURCE_URL, timeout=15)
-        r.raise_for_status()
-        r.encoding = "utf-8"
-        soup = BeautifulSoup(r.text, "lxml") # หรือ "html.parser"
-
-        def num(sel):
-            t = soup.select_one(sel)
-            txt = t.get_text(strip=True) if t else ""
-            if not txt: return None
-            try: return float(txt.replace(",",""))
-            except: return None
-
-        data = {
-            "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
-            "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
-            "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
-            "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
-            "times":    None,
-            "asof_time": None,
-        }
-
-        ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
-        if ts:
-            ts_text = ts.get_text(strip=True)
-            m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
-            if m: data["times"] = int(m.group(1))
-            m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
-            if m2: data["asof_time"] = m2.group(1)
-
-        if data["bar_buy"] and data["bar_sell"]:
-            return data
-
-    except Exception: pass 
-
-    # --- SOURCE 2: Nam Chiang (Backup) ---
-    try:
-        r = scraper.get("http://www.namchiang.com/th/", timeout=15)
-        r.encoding = "cp874"
-        soup = BeautifulSoup(r.text, "html.parser")
-        txt = soup.get_text()
+# ===== 4) CALCULATION ENGINE (yfinance) =====
+def calculate_thai_gold():
+    # ดึงค่าจาก Yahoo Finance (ฟรี & ไม่บล็อก)
+    # GC=F : Gold Futures (ใกล้เคียง Spot)
+    # THB=X : USD/THB Rate
+    tickers = yf.Tickers("GC=F THB=X")
+    
+    # ดึงข้อมูลล่าสุด
+    spot_data = tickers.tickers["GC=F"].history(period="1d")
+    thb_data = tickers.tickers["THB=X"].history(period="1d")
+    
+    if spot_data.empty or thb_data.empty:
+        raise RuntimeError("Yahoo Finance No Data")
         
-        def ex(lbl):
-            m = re.search(rf"{lbl}.*?([\d,]+).*?([\d,]+)", txt)
-            if m: return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
-            return None, None
+    spot_price = spot_data["Close"].iloc[-1]
+    usd_thb = thb_data["Close"].iloc[-1]
+    
+    # --- สูตรคำนวณราคาทองไทย (สูตรสมาคมฯ) ---
+    # 1. แปลง Spot + Premium (ประมาณ $2-5 เหรียญ)
+    # 2. คูณค่าเงินบาท
+    # 3. คูณตัวแปลงหน่วย 0.965 (ทอง 96.5%) / 0.656 (Nominal Weight)
+    # *ปรับจูน Premium เพื่อให้ตรงราคาตลาดปัจจุบัน
+    
+    premium = 2.0 # ค่าพรีเมี่ยม
+    conversion_factor = 0.965 / 0.656 # ~1.471
+    
+    raw_price = (spot_price + premium) * usd_thb * 0.4753 # 0.4753 คือค่าคงที่แปลงหน่วยไวๆ
+    # ปัดเศษหลัก 50 (ตามสมาคม)
+    def round_to_50(n):
+        return 50 * round(n / 50)
         
-        bb, bs = ex("ทองคำแท่ง")
-        ob, os = ex("ทองรูปพรรณ")
-        t_m = re.search(r"ครั้งที่\s?(\d+)", txt)
-        tm_m = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
-        
-        if bs:
-            return {
-                "bar_buy": bb, "bar_sell": bs, "orn_buy": ob, "orn_sell": os,
-                "times": int(t_m.group(1)) if t_m else None,
-                "asof_time": tm_m.group(1) if tm_m else datetime.now(TZ).strftime("%H:%M")
-            }
-    except: pass
+    sell_bar = round_to_50(raw_price) # ราคาขายออก
+    buy_bar  = sell_bar - 100         # รับซื้อต่างกัน 100 บาท
+    
+    # ทองรูปพรรณ (คิดแบบกำปั้นทุบดิน: ขายออก +500, รับซื้อ ~98% ของแท่ง)
+    sell_orn = sell_bar + 500
+    buy_orn  = round_to_50(buy_bar * 0.98) 
 
-    # --- SOURCE 3: ThaiGold.info (New Backup) ---
-    # เว็บนี้มักจะไม่บล็อกบอท และหน้าตา HTML เรียบง่าย
-    try:
-        r = scraper.get("https://thaigold.info/", timeout=15)
-        soup = BeautifulSoup(r.text, "html.parser")
-        # โครงสร้างเว็บนี้มักเอาตารางราคาไว้อันแรก
-        tables = soup.find_all("table")
-        for tab in tables:
-            txt = tab.get_text()
-            if "ทองคำแท่ง" in txt and "รับซื้อ" in txt:
-                # พยายามแกะ text ดิบๆ เลย
-                def ex_tg(key):
-                    # หาตัวเลข 2 ชุดหลังคำค้น
-                    m = re.search(rf"{key}.*?([\d,]+)\.?\d*.*?([\d,]+)", txt)
-                    if m: return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
-                    return None, None
-
-                bb, bs = ex_tg("ทองคำแท่ง")
-                ob, os = ex_tg("ทองรูปพรรณ")
-                
-                if bs:
-                     return {
-                        "bar_buy": bb, "bar_sell": bs, "orn_buy": ob, "orn_sell": os,
-                        "times": None, # เว็บนี้บางทีไม่บอกครั้งที่
-                        "asof_time": datetime.now(TZ).strftime("%H:%M") # ใช้วลาปัจจุบันแทน
-                    }
-    except: pass
-
-    # ถ้าพังหมด 3 แหล่ง
-    raise RuntimeError("All sources failed (Official, NamChiang, ThaiGold)")
+    return {
+        "bar_buy":  buy_bar,
+        "bar_sell": sell_bar,
+        "orn_buy":  buy_orn,
+        "orn_sell": sell_orn,
+        "times":    None, # คำนวณเองไม่มีครั้งที่
+        "asof_time": datetime.now(TZ).strftime("%H:%M"),
+        "spot": spot_price,
+        "usdt": usd_thb
+    }
 
 def fetch_assoc_safe():
-    status = {"source": "live", "message": ""}
+    status = {"source": "calc", "message": ""}
     try:
-        cur = fetch_assoc_raw()
+        cur = calculate_thai_gold()
         return cur, status
     except Exception as e:
         status["source"] = "cache"
-        status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
+        status["message"] = f"คำนวณไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
         cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
         return cur, status
 
 # ===== 5) MAIN UI =====
 st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
-st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub">Thai Gold 96.5% • (คำนวณจาก Spot Realtime)</div>', unsafe_allow_html=True)
+st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที • ไม่ต้องง้อสมาคมฯ</div>', unsafe_allow_html=True)
 
 cur, fetch_status = fetch_assoc_safe()
 state = load_state() or {}
@@ -308,9 +259,14 @@ prev  = state
 now = datetime.now(TZ)
 date_txt  = th_now(now)
 
+# แสดงค่า Spot เล็กๆ ให้รู้ว่ามาจากไหน
+spot_val = (cur or {}).get("spot")
+thb_val  = (cur or {}).get("usdt")
+spot_txt = f"Spot: ${spot_val:,.1f} • THB: {thb_val:,.2f}" if spot_val else ""
+
 times_now = (cur or {}).get("times")
 asof_time = (cur or {}).get("asof_time")
-times_txt = f"ครั้งที่ {times_now}" if times_now else "ครั้งที่ –"
+times_txt = f"{spot_txt}" # เอา Spot มาโชว์แทนครั้งที่
 display_time = asof_time or now.strftime("%H:%M")
 
 cur_buy   = float((cur or {}).get("bar_buy")  or 0)
@@ -324,17 +280,14 @@ tick_sell = int(round(cur_sell - prev_sell))
 # Sticky Badge
 prev_badge_times = prev.get("badge_times")
 prev_badge_delta = prev.get("badge_delta")
+# สำหรับระบบคำนวณ ใช้เวลาเป็น Key แทนครั้งที่
+time_key = asof_time 
 
-if times_now is None:
-    badge_delta_display = tick_sell
-    badge_times_to_save = prev_badge_times
+if prev.get("last_calc_time") == time_key:
+     badge_delta_display = prev_badge_delta if prev_badge_delta is not None else tick_sell
 else:
-    if prev_badge_times == times_now:
-        badge_delta_display = prev_badge_delta if prev_badge_delta is not None else tick_sell
-        badge_times_to_save = prev_badge_times
-    else:
-        badge_delta_display = tick_sell
-        badge_times_to_save = times_now
+     badge_delta_display = tick_sell
+     
 if badge_delta_display is None: badge_delta_display = 0
 
 # ----- CARD -----
@@ -344,7 +297,7 @@ st.markdown(
     <div class="header">
       <div class="left">
         <div class="pill">ประจำวันที่ {date_txt}</div>
-        <div class="pill">{escape(times_txt)}</div>
+        <div class="pill" style="font-size:10px;">{escape(times_txt)}</div>
       </div>
       <div class="status"><div class="badge">{escape(fmt_delta_for_badge(badge_delta_display))}</div></div>
       <div class="unit">บาทละ (บาท)</div>
@@ -353,13 +306,13 @@ st.markdown(
 )
 
 if is_market_closed(now):
-    st.info("🏁 สมาคมค้าทองคำปิดทำการแล้ว • แสดงราคาล่าสุดของวัน", icon="🏁")
+    st.info("🏁 ตลาดโลกปิด/พัก • ราคาอาจไม่ขยับ", icon="🏁")
 if fetch_status["source"] == "cache" and fetch_status["message"]:
     st.warning("ℹ️ " + fetch_status["message"])
 
 st.markdown('<div class="table">', unsafe_allow_html=True)
 st.markdown(
-    '<div class="row"><div class="cell head">96.5%</div>'
+    '<div class="row"><div class="cell head">96.5% (Est.)</div>'
     '<div class="cell head">รับซื้อ</div>'
     '<div class="cell head">ขายออก</div></div>',
     unsafe_allow_html=True
@@ -393,7 +346,7 @@ st.markdown(
 
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown(
-    f'<div class="footer"><div>อัปเดตล่าสุด: <b>{now.strftime("%d/%m/%Y")} • {display_time} น.</b></div><div>{escape(times_txt)}</div></div>',
+    f'<div class="footer"><div>อัปเดตล่าสุด: <b>{now.strftime("%d/%m/%Y")} • {display_time} น.</b></div><div>Realtime from YahooFinance</div></div>',
     unsafe_allow_html=True
 )
 st.markdown('</div>', unsafe_allow_html=True)
@@ -414,7 +367,7 @@ def seed_today_if_missing(cur_like, now):
         if bs:
             append_hist({
                 "date": today, "time": now.strftime("%H:%M:%S"),
-                "times": cur_like.get("times",""),
+                "times": "Open",
                 "buy_bar":  f"{(bb or 0):.2f}",
                 "sell_bar": f"{(bs or 0):.2f}",
                 "buy_orn":  f"{(ob or 0):.2f}",
@@ -433,7 +386,7 @@ if (is_change or is_recovery) and have_numbers_now:
     append_hist({
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S"),
-        "times": times_now or "",
+        "times": "Update",
         "buy_bar":  f"{cur_buy:.2f}",
         "sell_bar": f"{cur_sell:.2f}",
         "buy_orn":  f"{(cur.get('orn_buy')  or 0):.2f}",
@@ -445,12 +398,13 @@ if (is_change or is_recovery) and have_numbers_now:
     if TG_TOKEN and TG_CHAT:
         arrow = UP_EMOJI if tick_sell > 0 else DOWN_EMOJI
         extra_txt = arrow
-        if is_recovery: extra_txt = "⚠️(Connected)"
+        if is_recovery: extra_txt = "⚠️(Est. Mode)"
         msg = (
-            "<b>สมาคมค้าทองคำ อัปเดตราคา 96.5%</b>\n"
+            "<b>MeVGold (Est. Price)</b>\n"
+            f"Spot: <b>${spot_val:,.1f}</b> | THB: <b>{thb_val:,.2f}</b>\n"
             f"รับซื้อ: <b>{escape(f'{cur_buy:,.0f}')}</b> ({fmt_signed(tick_buy)})\n"
             f"ขายออก: <b>{escape(f'{cur_sell:,.0f}')}</b> ({fmt_signed(tick_sell)}) {extra_txt}\n"
-            f"{escape(times_txt)}  •  เวลา {display_time} น."
+            f"เวลา {display_time} น."
         )
         send_telegram(msg)
 
@@ -462,14 +416,17 @@ new_state["orn_buy"]   = (cur or {}).get("orn_buy")
 new_state["orn_sell"]  = (cur or {}).get("orn_sell")
 new_state["times"]     = times_now
 new_state["asof_time"] = asof_time
-new_state["badge_times"] = badge_times_to_save
+new_state["last_calc_time"] = time_key
+new_state["badge_times"] = None
 new_state["badge_delta"] = badge_delta_display
+new_state["spot"] = spot_val
+new_state["usdt"] = thb_val
 
-if fetch_status["source"] == "live" and have_numbers_now:
+if fetch_status["source"] == "calc" and have_numbers_now:
     save_state(new_state)
 
 # ===== 10) HISTORY VIEW =====
-with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
+with st.expander("📅 ประวัติวันนี้ (Realtime Calculation)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
         today = now.strftime("%Y-%m-%d")
