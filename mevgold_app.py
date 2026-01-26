@@ -1,6 +1,6 @@
 # mevgold_app.py — MeVGold (Pro/Lite in 1 file)
-# Pro: 1s auto-refresh, XAU/USD, USD/THB, 1-baht(96.5%), LINE Alerts (on-change + cooldown)
-# Lite: Thai gold only, manual refresh, no alerts, no global/FX
+# Updated: Fixed scraping logic for new website structure
+
 import os, json, csv, re, requests
 from datetime import datetime, timedelta
 import streamlit as st
@@ -13,7 +13,7 @@ st.set_page_config(page_title="MeVGold", page_icon="🥇", layout="centered")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
 
-# default mode from Secrets; can toggle in sidebar
+# อ่านค่าจาก Secrets (ถ้าไม่มีให้ใช้ค่า Default)
 IS_PRO_DEFAULT = str(st.secrets.get("IS_PRO", "true")).lower() in ("1", "true", "yes")
 LINE_TOKEN_SECRET = st.secrets.get("LINE_NOTIFY_TOKEN", "")
 
@@ -25,16 +25,19 @@ MAX_ALERTS_PER_DAY = int(st.secrets.get("MAX_ALERTS_PER_DAY", 30))
 with st.sidebar:
     st.header("⚙️ Settings")
     is_pro = st.toggle("โหมด Pro", value=IS_PRO_DEFAULT, help="สลับโหมดเพื่อทดสอบฟีเจอร์ Pro/Lite")
+    
+    line_token_input = ""
     if is_pro:
         st.subheader("🔔 LINE Notify (เฉพาะ Pro)")
         token_in = st.text_input("LINE Notify Token", type="password", value="")
-        LINE_TOKEN = (token_in.strip() or LINE_TOKEN_SECRET or "").strip()
-        if LINE_TOKEN:
+        line_token_input = (token_in.strip() or LINE_TOKEN_SECRET or "").strip()
+        
+        if line_token_input:
             st.success("พร้อมส่งแจ้งเตือนผ่าน LINE ✅")
         else:
             st.info("ใส่ LINE Token เพื่อให้แจ้งเตือนได้")
-    else:
-        LINE_TOKEN = ""
+    
+    LINE_TOKEN = line_token_input
 
 # ───────── Style ─────────
 st.markdown("""
@@ -59,18 +62,9 @@ html,body,.stApp{background:radial-gradient(140% 160% at 50% -40%,var(--bg1) 0%,
   padding:6px 14px; border-radius:12px;
   border:1px solid var(--line);
 }
-.delta-up{
-  color:#0A7B34; background:rgba(16,185,129,.12);
-  border-color:rgba(16,185,129,.35);
-}
-.delta-down{
-  color:#B00020; background:rgba(239,68,68,.12);
-  border-color:rgba(239,68,68,.35);
-}
-.delta-flat{
-  color:#6B7280; background:#F3F4F6;
-  border-color:#E5E7EB;
-}
+.delta-up{ color:#0A7B34; background:rgba(16,185,129,.12); border-color:rgba(16,185,129,.35); }
+.delta-down{ color:#B00020; background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.35); }
+.delta-flat{ color:#6B7280; background:#F3F4F6; border-color:#E5E7EB; }
 
 .kv-wrap{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin:10px auto 4px;}
 .kv{flex:1 1 320px;background:var(--card);border-radius:16px;box-shadow:0 6px 14px rgba(0,0,0,.05);
@@ -82,8 +76,6 @@ html,body,.stApp{background:radial-gradient(140% 160% at 50% -40%,var(--bg1) 0%,
   box-shadow:0 6px 14px rgba(0,0,0,.05);text-align:center;}
 .card h4{margin:0 0 6px;font-size:14px;color:#8b90a1;}
 .card .v{font-size:22px;font-weight:800;}
-.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:10px 0 4px}
-@media(max-width:720px){.grid-3{grid-template-columns:1fr;}}
 
 .divider{height:1px;background:var(--line);width:min(760px,92%);margin:12px auto;}
 .meta{text-align:center;color:var(--muted);font-size:13px;margin-top:6px;}
@@ -118,42 +110,89 @@ def append_history(row):
 # ───────── Fetchers ─────────
 def fetch_gold_thai():
     url = "https://www.goldtraders.or.th/default.aspx"
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"th-TH,th;q=0.9"}
-    r = requests.get(url, headers=headers, timeout=20)
-    r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "html.parser")
-    sell = soup.select_one("#DetailPlace_uc_goldprices1_lblBLSell")
-    buy  = soup.select_one("#DetailPlace_uc_goldprices1_lblBLBuy")
-    ts   = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
-    if not (sell and buy):
-        raise ValueError("ไม่พบราคาทองจากเว็บสมาคมฯ (โครงหน้าเว็บอาจเปลี่ยน)")
-    sellv = float(sell.get_text(strip=True).replace(",",""))
-    buyv  = float(buy.get_text(strip=True).replace(",",""))
-    tstr  = ts.get_text(strip=True) if ts else datetime.now().strftime("%d/%m/%Y %H:%M")
-    m = re.search(r"ครั้งที่\s?(\d+)", tstr); times = int(m.group(1)) if m else None
-    return {"buy_bar":buyv,"sell_bar":sellv,"times":times,"timestamp":tstr}
+    # Header เลียนแบบ Browser จริง
+    headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    
+    try:
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # ⭐️ FIXED: ใช้ Logic หาจาก Text แทน ID (ทนทานกว่า)
+        def get_price_by_label(soup_obj, label_text, col_idx=1):
+            found = soup_obj.find(string=re.compile(label_text))
+            if not found: return None
+            row = found.parent
+            while row and row.name != 'tr': row = row.parent
+            if not row: return None
+            cols = row.find_all(['td', 'th'])
+            if len(cols) > col_idx:
+                txt = cols[col_idx].get_text(strip=True).replace(",", "")
+                try: return float(txt)
+                except: return None
+            return None
+
+        # ดึงราคา
+        buyv  = get_price_by_label(soup, "ทองคำแท่ง", 1) # ช่องรับซื้อ
+        sellv = get_price_by_label(soup, "ทองคำแท่ง", 2) # ช่องขายออก
+
+        # ดึงเวลา
+        tstr = datetime.now().strftime("%d/%m/%Y %H:%M") # fallback
+        times = None
+        
+        # พยายามแกะเวลาจากหน้าเว็บ
+        time_node = soup.find(string=re.compile(r"เวลา\s?\d{1,2}:\d{2}"))
+        if time_node:
+            full_text = time_node.strip()
+            tstr = full_text
+            m = re.search(r"ครั้งที่\s?(\d+)", full_text)
+            if m: times = int(m.group(1))
+
+        if sellv is None or buyv is None:
+            raise ValueError("หาตัวเลขราคาไม่เจอ (โครงสร้างเว็บอาจเปลี่ยน)")
+
+        return {"buy_bar": buyv, "sell_bar": sellv, "times": times, "timestamp": tstr}
+
+    except Exception as e:
+        raise ValueError(f"เกิดข้อผิดพลาดในการดึงข้อมูล: {e}")
 
 def fetch_global_gold_and_fx():
+    data = {"xauusd": None, "usdthb": None, "baht96": None}
     try:
-        r1 = requests.get("https://api.metals.live/v1/spot/gold", timeout=12) # XAU/USD
-        xau = float(r1.json()[0]["price"])
-        r2 = requests.get("https://api.exchangerate.host/latest?base=USD&symbols=THB", timeout=12) # USDTHB
-        thb = float(r2.json()["rates"]["THB"])
-        grams_per_baht = 15.244; troy_oz = 31.1035; purity = 0.965
-        baht_price_96 = xau * thb * (grams_per_baht / troy_oz) * purity
-        return {"xauusd": xau, "usdthb": thb, "baht96": baht_price_96}
+        # 1. Gold Spot (Free API - อาจไม่เสถียร)
+        try:
+            r1 = requests.get("https://api.metals.live/v1/spot/gold", timeout=5)
+            if r1.status_code == 200:
+                data["xauusd"] = float(r1.json()[0]["price"])
+        except: pass
+
+        # 2. USD/THB (Free API - อาจติด Rate Limit)
+        try:
+            r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
+            if r2.status_code == 200:
+                data["usdthb"] = float(r2.json()["rates"]["THB"])
+        except: pass
+
+        # 3. Calculate
+        if data["xauusd"] and data["usdthb"]:
+            grams_per_baht = 15.244
+            troy_oz = 31.1035
+            purity = 0.965
+            data["baht96"] = data["xauusd"] * data["usdthb"] * (grams_per_baht / troy_oz) * purity
+            
+        return data
     except Exception as e:
-        return {"xauusd": None, "usdthb": None, "baht96": None, "error": str(e)}
+        return data
 
 # ───────── LINE Notify (Pro) ─────────
-def send_line_notify(message: str):
-    token = LINE_TOKEN if is_pro else ""
+def send_line_notify(message: str, token: str):
     if not token: return 0, "no-token"
     try:
         r = requests.post(
             "https://notify-api.line.me/api/notify",
             headers={"Authorization": f"Bearer {token}"},
-            data={"message": message}, timeout=12
+            data={"message": message}, timeout=10
         )
         return r.status_code, r.text
     except Exception as e:
@@ -171,24 +210,33 @@ def in_cooldown(prev: dict, now: datetime) -> bool:
 def daily_cap_reached(prev: dict, now: datetime) -> bool:
     tag = now.strftime("%Y-%m-%d")
     push_count = prev.get("push_count", f"{tag}:0")
-    day, cnt = push_count.split(":")
-    cnt = int(cnt) if day == tag else 0
-    return cnt >= MAX_ALERTS_PER_DAY
+    try:
+        day, cnt = push_count.split(":")
+        cnt = int(cnt) if day == tag else 0
+        return cnt >= MAX_ALERTS_PER_DAY
+    except: return False
 
 def inc_daily_count(prev: dict, now: datetime) -> dict:
     tag = now.strftime("%Y-%m-%d")
-    day, cnt = prev.get("push_count", f"{tag}:0").split(":")
-    cnt = int(cnt) if day == tag else 0
+    push_count = prev.get("push_count", f"{tag}:0")
+    try:
+        day, cnt = push_count.split(":")
+        cnt = int(cnt) if day == tag else 0
+    except:
+        cnt = 0
+    
     prev["push_count"] = f"{tag}:{cnt+1}"
     prev["last_push"] = now.isoformat()
     return prev
 
 def should_alert(prev: dict, cur: dict) -> bool:
     if not prev: return False
-    changed = (cur.get("times") != prev.get("times")) \
-           or (cur.get("buy_bar") != prev.get("buy_bar")) \
-           or (cur.get("sell_bar") != prev.get("sell_bar"))
+    
+    # เช็คว่าราคาเปลี่ยนหรือไม่ (เทียบกับ State ล่าสุดที่บันทึกไว้)
+    changed = (cur.get("sell_bar") != prev.get("sell_bar"))
+    
     if not changed: return False
+    
     now = datetime.now()
     if in_cooldown(prev, now): return False
     if daily_cap_reached(prev, now): return False
@@ -204,21 +252,28 @@ st.markdown(
 
 # ───────── Auto-refresh ─────────
 if is_pro:
-    st.markdown('<meta http-equiv="refresh" content="1">', unsafe_allow_html=True)  # 1s
+    # Auto refresh every 60s (เพื่อไม่ให้โหลดหนักเกินไป)
+    st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 else:
     st.caption("โหมด Lite: รีเฟรชด้วยปุ่มด้านล่าง (ไม่มี Auto-refresh)")
 
 # ───────── Main flow ─────────
-try:
-    cur  = fetch_gold_thai()
-except Exception as e:
-    st.error(f"❌ ดึงราคาทองไทยไม่สำเร็จ: {e}")
-    st.stop()
-
 prev = load_state()
 
-# ใช้ "ขายออก" เป็นตัวอ้างอิงการเปลี่ยนแปลง
-change = cur["sell_bar"] - prev.get("sell_bar", cur["sell_bar"])
+try:
+    cur = fetch_gold_thai()
+except Exception as e:
+    st.error(f"❌ ไม่สามารถดึงราคาทองได้: {e}")
+    # ถ้าดึงสดไม่ได้ ให้เอาค่าเก่ามาแสดง (ถ้ามี)
+    if prev.get("sell_bar"):
+        cur = prev
+        st.warning(f"⚠️ แสดงราคาล่าสุดที่บันทึกไว้: {prev.get('timestamp')}")
+    else:
+        st.stop()
+
+# คำนวณส่วนต่าง (ใช้ราคาขายออก)
+prev_sell = prev.get("sell_bar", cur["sell_bar"])
+change = cur["sell_bar"] - prev_sell
 delta_txt = ("+" if change > 0 else "") + f"{change:,.0f}"
 delta_cls = "delta-up" if change > 0 else ("delta-down" if change < 0 else "delta-flat")
 
@@ -236,93 +291,102 @@ st.markdown(
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
-# รับซื้อ / ขายออก แยกบล็อก
+# รับซื้อ / ขายออก
 st.markdown('<div class="kv-wrap">', unsafe_allow_html=True)
 st.markdown(f'<div class="kv"><label>รับซื้อ</label><b>{cur["buy_bar"]:,.0f}</b></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="kv"><label>ขายออก</label><b>{cur["sell_bar"]:,.0f}</b></div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Pro: show global/FX/1baht; Lite: upsell
+# Pro Features
+g_data = {"xauusd": None, "usdthb": None, "baht96": None}
+
 if is_pro:
-    g = fetch_global_gold_and_fx()
+    g_data = fetch_global_gold_and_fx()
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown('<div class="card"><h4>XAU/USD</h4><div class="v">'
-                    + (f"${g['xauusd']:,.2f}" if g.get("xauusd") else "—")
-                    + '</div></div>', unsafe_allow_html=True)
+        val = f"${g_data['xauusd']:,.2f}" if g_data['xauusd'] else "N/A"
+        st.markdown(f'<div class="card"><h4>XAU/USD</h4><div class="v">{val}</div></div>', unsafe_allow_html=True)
     with c2:
-        st.markdown('<div class="card"><h4>USD/THB</h4><div class="v">'
-                    + (f"{g['usdthb']:.2f}" if g.get("usdthb") else "—")
-                    + '</div></div>', unsafe_allow_html=True)
+        val = f"{g_data['usdthb']:.2f}" if g_data['usdthb'] else "N/A"
+        st.markdown(f'<div class="card"><h4>USD/THB</h4><div class="v">{val}</div></div>', unsafe_allow_html=True)
     with c3:
-        st.markdown('<div class="card"><h4>ทอง 1 บาท (96.5%)</h4><div class="v">'
-                    + (f"{g['baht96']:,.0f} บาท" if g.get("baht96") else "—")
-                    + '</div></div>', unsafe_allow_html=True)
+        val = f"{g_data['baht96']:,.0f}" if g_data['baht96'] else "N/A"
+        st.markdown(f'<div class="card"><h4>คำนวณ (บาท)</h4><div class="v">{val}</div></div>', unsafe_allow_html=True)
 else:
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="upgrade"><a href="#" title="อัปเกรดเป็น Pro">🔓 อัปเกรดเป็น MeVGold Pro เพื่อดู XAU/USD, ค่าเงินบาท และคำนวณทอง 1 บาท พร้อมแจ้งเตือน</a></div>', unsafe_allow_html=True)
-    g = {"xauusd": None, "usdthb": None, "baht96": None}
+    st.markdown('<div class="upgrade"><a href="#" title="Upgrade">🔓 เปิดโหมด Pro เพื่อดูราคา Spot & FX</a></div>', unsafe_allow_html=True)
 
 times_txt = f'ครั้งที่ {cur["times"]}' if cur.get("times") else "ครั้งที่ –"
 st.markdown(f'<div class="meta">{times_txt} • อัปเดต {cur["timestamp"]}</div>', unsafe_allow_html=True)
 
-# History (บันทึกมากขึ้นเฉพาะ Pro)
-append_history([
-    datetime.now().strftime("%Y-%m-%d"),
-    datetime.now().strftime("%H:%M:%S"),
-    f"{cur['buy_bar']:.0f}", f"{cur['sell_bar']:.0f}",
-    f"{g['xauusd']:.2f}" if g.get("xauusd") else "",
-    f"{g['usdthb']:.4f}" if g.get("usdthb") else "",
-    f"{g['baht96']:.0f}" if g.get("baht96") else ""
-])
+# ───────── History Log ─────────
+# บันทึกเฉพาะเมื่อราคาเปลี่ยน หรือยังไม่มีประวัติวันนี้
+should_log = False
+if not os.path.exists(HIST_FILE):
+    should_log = True
+else:
+    # เช็คว่าราคาเปลี่ยนจากบรรทัดสุดท้ายใน CSV หรือไม่ (อย่างง่าย)
+    try:
+        last_row = pd.read_csv(HIST_FILE).iloc[-1]
+        if float(last_row["sell"]) != cur["sell_bar"]:
+            should_log = True
+    except: should_log = True
 
-with st.expander("📅 ประวัติวันนี้ (ดูรายละเอียด)", expanded=False):
+if should_log:
+    append_history([
+        datetime.now().strftime("%Y-%m-%d"),
+        datetime.now().strftime("%H:%M:%S"),
+        f"{cur['buy_bar']:.0f}", f"{cur['sell_bar']:.0f}",
+        f"{g_data['xauusd']:.2f}" if g_data['xauusd'] else "",
+        f"{g_data['usdthb']:.4f}" if g_data['usdthb'] else "",
+        f"{g_data['baht96']:.0f}" if g_data['baht96'] else ""
+    ])
+
+with st.expander("📅 ประวัติราคา (CSV)", expanded=False):
     if os.path.exists(HIST_FILE):
-        try:
-            df = pd.read_csv(HIST_FILE)
-            st.dataframe(df.tail(80 if is_pro else 40), width='stretch', hide_index=True)
-            st.download_button("⬇️ ดาวน์โหลด CSV", data=df.to_csv(index=False).encode("utf-8"),
-                               file_name="history_today.csv", mime="text/csv")
-        except Exception:
-            with open(HIST_FILE,"r",encoding="utf-8") as f:
-                st.code("".join(f.readlines()[-(120 if is_pro else 60):]))
+        df = pd.read_csv(HIST_FILE)
+        st.dataframe(df.tail(30).iloc[::-1], use_container_width=True, hide_index=True) # กลับด้านเอาล่าสุดขึ้นบน
+        st.download_button("⬇️ ดาวน์โหลด CSV", df.to_csv(index=False).encode("utf-8"), "gold_history.csv", "text/csv")
 
 if is_pro:
-    st.markdown('<div class="note">* ทอง 1 บาท (96.5%) = XAU/USD × USD/THB × 15.244/31.1035 × 0.965</div>', unsafe_allow_html=True)
+    st.markdown('<div class="note">* สูตรคำนวณ: Spot × USDTHB × 0.4729 (โดยประมาณ)</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="footer">MeVGold © 2025 — ข้อมูลจากสมาคมค้าทองคำ & สาธารณะ API (เพื่อการแสดงผลเท่านั้น)</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer">MeVGold © 2025</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ───────── Alerts (Pro only): on official change + cooldown ─────────
-state = load_state()
-if is_pro:
-    ok = should_alert(state, cur)
-    if ok and LINE_TOKEN:
-        sign = "ขึ้น" if cur["sell_bar"] > state.get("sell_bar", cur["sell_bar"]) else "ลง"
-        change_amt = abs(cur["sell_bar"] - state.get("sell_bar", cur["sell_bar"]))
-        msg = (
-            f"📢 ราคาทองคำอัปเดต{' (ครั้งที่ '+str(cur['times'])+')' if cur.get('times') else ''}\n"
-            f"ขายออก: {cur['sell_bar']:,.0f} บาท ({'+' if sign=='ขึ้น' else '-'}{change_amt:,.0f})\n"
-            f"รับซื้อ: {cur['buy_bar']:,.0f} บาท\n"
-            f"เวลา: {cur['timestamp']}"
-        )
-        code, text = send_line_notify(msg)
-        # update push counters
-        now = datetime.now()
-        state = {**state, **cur}
-        state = inc_daily_count(state, now)
-        save_state(state)
-    else:
-        # just save current state
-        state = {**state, **cur}
-        save_state(state)
-else:
-    # Lite: save current state (no alerts)
-    state = {**state, **cur}
-    save_state(state)
+# ───────── Logic: Save State & Alerts ─────────
+# เตรียม State ใหม่
+new_state = prev.copy()
+new_state.update(cur) # อัปเดตราคาล่าสุดเข้าไป
 
-# Lite: manual refresh button
+if is_pro and LINE_TOKEN:
+    # ตรวจสอบเงื่อนไขแจ้งเตือน
+    if should_alert(prev, cur):
+        sign = "ขึ้น 🟢" if cur["sell_bar"] > prev.get("sell_bar", 0) else "ลง 🔴"
+        change_amt = abs(cur["sell_bar"] - prev.get("sell_bar", 0))
+        
+        msg = (
+            f"\n📢 ราคาทอง {sign} {change_amt:,.0f} บาท\n"
+            f"ขายออก: {cur['sell_bar']:,.0f}\n"
+            f"รับซื้อ: {cur['buy_bar']:,.0f}\n"
+            f"({times_txt} - {cur['timestamp']})"
+        )
+        
+        # ส่ง LINE
+        code, txt = send_line_notify(msg, LINE_TOKEN)
+        
+        if code == 200:
+            # ถ้าส่งสำเร็จ ค่อยอัปเดต Counter และเวลา
+            new_state = inc_daily_count(new_state, datetime.now())
+            print(f"LINE Sent: {msg}")
+        else:
+            print(f"LINE Error: {txt}")
+
+# บันทึก State ท้ายสุด
+save_state(new_state)
+
+# Lite: ปุ่มรีเฟรช
 if not is_pro:
-    if st.button("🔄 รีเฟรชตอนนี้"):
+    if st.button("🔄 รีเฟรชข้อมูล"):
         st.rerun()
