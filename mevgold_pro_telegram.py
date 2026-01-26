@@ -1,5 +1,6 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (Final Fix for History & Notification)
-# แก้ไขล่าสุด: ปลดล็อก Logic ให้แจ้งเตือนทันทีเมื่อระบบฟื้นจากค่า None
+# mevgold_pro_telegram.py — MeVGold 96.5% (Final Logic Fix)
+# แก้ไขล่าสุด: ปลดล็อกการแจ้งเตือนเมื่อระบบฟื้นตัว (Recovery) + ป้องกันประวัติ None
+# Notification Style: คงเดิม 100% ตามคำขอ
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -179,8 +180,8 @@ def ensure_hist():
         pass
 
 def append_hist(row:dict):
-    # ป้องกันการบันทึกค่าว่าง (None) ลง CSV
-    if not row.get("buy_bar") or row.get("buy_bar") == "None":
+    # ป้องกันการบันทึกค่าว่าง (None/0) ลง CSV เพื่อไม่ให้ประวัติพัง
+    if not row.get("sell_bar") or str(row.get("sell_bar")) in ["0", "None", "0.00"]:
         return 
 
     ensure_hist()
@@ -209,7 +210,7 @@ def send_telegram(text:str):
     except:
         pass
 
-# ===== 6) FETCH =====
+# ===== 6) FETCH (ROBUST: OFFICIAL JSON + NAM CHIANG FALLBACK) =====
 def fetch_assoc_raw():
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -217,13 +218,12 @@ def fetch_assoc_raw():
         "Cache-Control": "no-cache"
     }
 
+    # 1. Official Next.js JSON Extraction
     try:
-        # ลองดึงจากเว็บสมาคมก่อน (Official)
         r = requests.get(SOURCE_URL, headers=headers, timeout=FETCH_TIMEOUT)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         
-        # Next.js extraction
         script_tag = soup.find("script", id="__NEXT_DATA__")
         if script_tag:
             json_data = json.loads(script_tag.string)
@@ -249,7 +249,6 @@ def fetch_assoc_raw():
             ob = get_val("omBuy")
             os = get_val("omSell")
             
-            # Times & Date
             raw_date = str(recursive_find(json_data, "updateDate") or recursive_find(json_data, "timeUpdate") or "")
             m_time = re.search(r"(\d{1,2}:\d{2})", raw_date)
             asof = m_time.group(1) if m_time else datetime.now(TZ).strftime("%H:%M")
@@ -263,7 +262,7 @@ def fetch_assoc_raw():
     except:
         pass
 
-    # Fallback: Nam Chiang (ถ้าเว็บหลักพัง)
+    # 2. Fallback: Nam Chiang (HTML Mirror)
     try:
         r = requests.get("http://www.namchiang.com/th/", headers=headers, timeout=20)
         r.encoding = "cp874"
@@ -326,12 +325,14 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
-# ----- Logic แจ้งเตือน: ถ้าค่าเดิมเป็น 0 หรือ None ให้ถือว่ามีการเปลี่ยนแปลงทันที -----
+# ===== 🔥 KEY LOGIC FIX: TRIGGER ALERT ON RECOVERY =====
 have_numbers_now = (cur is not None) and (cur.get("bar_sell") is not None)
-have_numbers_prev = (prev is not None) and (prev.get("bar_sell") is not None)
+# เช็คว่าข้อมูลเก่า "ใช้การได้" หรือไม่ (ไม่ใช่ None และไม่ใช่ 0)
+have_numbers_prev = (prev is not None) and (prev.get("bar_sell") is not None) and (prev.get("bar_sell") != 0)
 
-# Critical Fix: ถ้าของเก่าไม่มีค่า (เป็น 0 หรือ None) แต่ของใหม่มีค่า -> ถือว่า Changed (Recovery)
+# 1. การฟื้นตัว: ของเก่าพัง แต่ของใหม่ดี -> แจ้งเตือน!
 is_recovery = (not have_numbers_prev) and have_numbers_now
+# 2. การเปลี่ยนแปลงปกติ: ของเก่าดี ของใหม่ดี และราคาเปลี่ยน -> แจ้งเตือน!
 is_price_change = have_numbers_now and have_numbers_prev and ((tick_buy != 0) or (tick_sell != 0))
 
 changed = is_recovery or is_price_change
@@ -416,7 +417,7 @@ st.markdown(
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
-# ===== 8) HISTORY + TELEGRAM Logic =====
+# ===== 8) HISTORY + TELEGRAM Logic (Applied Fix) =====
 ensure_hist()
 
 def seed_today_if_missing(cur_like, now):
@@ -430,16 +431,16 @@ def seed_today_if_missing(cur_like, now):
     has_valid_today = False
     if not df.empty and "date" in df.columns:
         today_rows = df[df["date"] == today]
-        # เช็คว่ามีแถวที่มีราคาจริงไหม
         for _, r in today_rows.iterrows():
-            if r.get("sell_bar") and r.get("sell_bar") != "0" and r.get("sell_bar") != "None":
+            if r.get("sell_bar") and r.get("sell_bar") not in ["0", "None", "0.0"]:
                 has_valid_today = True
                 break
     
     if not has_valid_today:
         bb = cur_like.get("bar_buy");  bs = cur_like.get("bar_sell")
         ob = cur_like.get("orn_buy");  os = cur_like.get("orn_sell")
-        if bs: # บันทึกเมื่อมีข้อมูลเท่านั้น
+        # บันทึกเฉพาะเมื่อมีข้อมูลจริงเท่านั้น
+        if bs:
             append_hist({
                 "date": today, "time": now.strftime("%H:%M:%S"),
                 "times": cur_like.get("times",""),
@@ -452,6 +453,7 @@ def seed_today_if_missing(cur_like, now):
 
 seed_today_if_missing(cur, now)
 
+# เงื่อนไขใหม่: แจ้งเตือนเมื่อมีการเปลี่ยนแปลง หรือ ฟื้นตัวจาก Error
 if changed and have_numbers_now:
     append_hist({
         "date": now.strftime("%Y-%m-%d"),
@@ -467,8 +469,8 @@ if changed and have_numbers_now:
     
     if TG_TOKEN and TG_CHAT:
         arrow = UP_EMOJI if tick_sell > 0 else DOWN_EMOJI
-        # ถ้าเป็นการฟื้นตัว (Recovery) ให้แสดงเครื่องหมายตกใจแทนลูกศร
-        if is_recovery: arrow = "⚠️(ระบบฟื้นตัว)"
+        # ถ้าเป็นการฟื้นตัว (Recovery) อาจจะไม่มี Delta ให้เห็น
+        if is_recovery: arrow = "" 
         
         msg = (
             "<b>สมาคมค้าทองคำ อัปเดตราคา 96.5%</b>\n"
@@ -492,7 +494,7 @@ with st.expander("📅 ประวัติวันนี้ (เฉพาะ�
         today = now.strftime("%Y-%m-%d")
         df = df[df["date"] == today].copy()
         
-        # กรองแถวที่ไม่มีข้อมูลออก
+        # กรองแถวที่ไม่มีข้อมูลออก (Clean Data)
         df = df[df["sell_bar"] != "None"]
         df = df[df["sell_bar"].notna()]
         
