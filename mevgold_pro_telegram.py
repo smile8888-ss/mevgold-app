@@ -1,13 +1,14 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (Fixed: Anti-Bot Headers + Dual Source)
-# 1. Official Site (with Chrome Headers)
-# 2. Nam Chiang (Fallback)
+# mevgold_pro_telegram.py — MeVGold 96.5% (CloudScraper Edition)
+# Fix: Replaced requests with cloudscraper to bypass IP blocking
+# Sources: 1.Official, 2.NamChiang, 3.ThaiGold.info (Aggregator)
 
-import os, json, re, csv, requests
+import os, json, re, csv
 from datetime import datetime
 from html import escape
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import cloudscraper # ⚡️ พระเอกของเรา
 from bs4 import BeautifulSoup
 import pandas as pd
 
@@ -26,9 +27,8 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
-# URL หลักของสมาคม
-SOURCE_URL = "https://www.goldtraders.or.th/default.aspx" 
-FETCH_TIMEOUT = 20
+SOURCE_URL = "https://www.goldtraders.or.th/default.aspx"
+FETCH_TIMEOUT = 25
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
@@ -178,7 +178,9 @@ def fmt_delta_for_badge(n:int) -> str:
 
 def send_telegram(text:str):
     if not (TG_TOKEN and TG_CHAT): return
+    # Telegram ใช้ requests ปกติได้ ไม่ค่อยบล็อก
     try:
+        import requests
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
             data={"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML"},
@@ -186,21 +188,17 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (Fixed) =====
+# ===== 4) FETCH ENGINE (CloudScraper Edition) =====
 def fetch_assoc_raw():
-    # 1. Official Site (สมาคมฯ) - ใช้ Headers ปลอมตัวเป็น Chrome
+    # สร้างหัวเจาะ CloudScraper (ทะลวง WAF/Cloudflare)
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+
+    # --- SOURCE 1: Official ---
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Referer": "https://www.google.com/",
-            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-        
-        r = requests.get(SOURCE_URL, headers=headers, timeout=15)
+        r = scraper.get(SOURCE_URL, timeout=15)
         r.raise_for_status()
         r.encoding = "utf-8"
-        soup = BeautifulSoup(r.text, "lxml") # ใช้ lxml ถ้ามี ถ้าไม่มีเปลี่ยนเป็น html.parser
+        soup = BeautifulSoup(r.text, "lxml") # หรือ "html.parser"
 
         def num(sel):
             t = soup.select_one(sel)
@@ -209,7 +207,6 @@ def fetch_assoc_raw():
             try: return float(txt.replace(",",""))
             except: return None
 
-        # ID มาตรฐานของสมาคม (ASP.NET WebForms)
         data = {
             "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
             "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
@@ -230,20 +227,18 @@ def fetch_assoc_raw():
         if data["bar_buy"] and data["bar_sell"]:
             return data
 
-    except Exception:
-        pass # ถ้าสมาคมล่ม ให้ข้ามไป Nam Chiang
+    except Exception: pass 
 
-    # 2. Backup: ห้างทองนำเชียง (Nam Chiang)
+    # --- SOURCE 2: Nam Chiang (Backup) ---
     try:
-        r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
+        r = scraper.get("http://www.namchiang.com/th/", timeout=15)
         r.encoding = "cp874"
         soup = BeautifulSoup(r.text, "html.parser")
         txt = soup.get_text()
         
         def ex(lbl):
             m = re.search(rf"{lbl}.*?([\d,]+).*?([\d,]+)", txt)
-            if m:
-                return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
+            if m: return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
             return None, None
         
         bb, bs = ex("ทองคำแท่ง")
@@ -259,8 +254,36 @@ def fetch_assoc_raw():
             }
     except: pass
 
-    # ถ้าพังหมด
-    raise RuntimeError("All sources failed (Official & Backup)")
+    # --- SOURCE 3: ThaiGold.info (New Backup) ---
+    # เว็บนี้มักจะไม่บล็อกบอท และหน้าตา HTML เรียบง่าย
+    try:
+        r = scraper.get("https://thaigold.info/", timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+        # โครงสร้างเว็บนี้มักเอาตารางราคาไว้อันแรก
+        tables = soup.find_all("table")
+        for tab in tables:
+            txt = tab.get_text()
+            if "ทองคำแท่ง" in txt and "รับซื้อ" in txt:
+                # พยายามแกะ text ดิบๆ เลย
+                def ex_tg(key):
+                    # หาตัวเลข 2 ชุดหลังคำค้น
+                    m = re.search(rf"{key}.*?([\d,]+)\.?\d*.*?([\d,]+)", txt)
+                    if m: return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
+                    return None, None
+
+                bb, bs = ex_tg("ทองคำแท่ง")
+                ob, os = ex_tg("ทองรูปพรรณ")
+                
+                if bs:
+                     return {
+                        "bar_buy": bb, "bar_sell": bs, "orn_buy": ob, "orn_sell": os,
+                        "times": None, # เว็บนี้บางทีไม่บอกครั้งที่
+                        "asof_time": datetime.now(TZ).strftime("%H:%M") # ใช้วลาปัจจุบันแทน
+                    }
+    except: pass
+
+    # ถ้าพังหมด 3 แหล่ง
+    raise RuntimeError("All sources failed (Official, NamChiang, ThaiGold)")
 
 def fetch_assoc_safe():
     status = {"source": "live", "message": ""}
@@ -403,7 +426,6 @@ seed_today_if_missing(cur or prev, now)
 
 have_numbers_now  = (cur is not None) and (cur.get("bar_sell") is not None)
 have_numbers_prev = (prev is not None) and (prev.get("bar_sell") is not None)
-# Logic: Alert on Change OR Recovery from failure
 is_recovery = (not have_numbers_prev) and have_numbers_now
 is_change = have_numbers_now and have_numbers_prev and ((tick_buy != 0) or (tick_sell != 0))
 
