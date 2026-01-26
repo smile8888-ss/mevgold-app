@@ -1,5 +1,5 @@
 # mevgold_app.py — MeVGold (Pro/Lite in 1 file)
-# Updated: Fixed scraping logic for new website structure
+# Updated: Fixed scraping logic for new website structure (Text-based search)
 
 import os, json, csv, re, requests
 from datetime import datetime, timedelta
@@ -110,32 +110,40 @@ def append_history(row):
 # ───────── Fetchers ─────────
 def fetch_gold_thai():
     url = "https://www.goldtraders.or.th/default.aspx"
-    # Header เลียนแบบ Browser จริง
-    headers = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    # Header เลียนแบบ Browser จริง (สำคัญมาก)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "th-TH,th;q=0.9"
+    }
     
     try:
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         r.encoding = "utf-8"
+        # ใช้ html.parser (เสถียรสุดบน Streamlit Cloud)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # ⭐️ FIXED: ใช้ Logic หาจาก Text แทน ID (ทนทานกว่า)
-        def get_price_by_label(soup_obj, label_text, col_idx=1):
-            found = soup_obj.find(string=re.compile(label_text))
+        # ⭐️ FIXED: ฟังก์ชันหาตัวเลขจาก "คำค้นหา" (ไม่ต้องง้อ ID)
+        def get_price_from_table(label_text, col_index):
+            # 1. หาข้อความ
+            found = soup.find(string=re.compile(label_text))
             if not found: return None
-            row = found.parent
-            while row and row.name != 'tr': row = row.parent
+            # 2. ถอยกลับไปหาแถว (tr)
+            row = found.find_parent("tr")
             if not row: return None
-            cols = row.find_all(['td', 'th'])
-            if len(cols) > col_idx:
-                txt = cols[col_idx].get_text(strip=True).replace(",", "")
-                try: return float(txt)
+            # 3. หาช่อง (td)
+            cols = row.find_all("td")
+            # 4. ดึงค่า
+            if len(cols) > col_index:
+                text_val = cols[col_index].get_text(strip=True).replace(",", "")
+                try: return float(text_val)
                 except: return None
             return None
 
         # ดึงราคา
-        buyv  = get_price_by_label(soup, "ทองคำแท่ง", 1) # ช่องรับซื้อ
-        sellv = get_price_by_label(soup, "ทองคำแท่ง", 2) # ช่องขายออก
+        buyv  = get_price_from_table("ทองคำแท่ง", 1) # ช่องที่ 2
+        sellv = get_price_from_table("ทองคำแท่ง", 2) # ช่องที่ 3
 
         # ดึงเวลา
         tstr = datetime.now().strftime("%d/%m/%Y %H:%M") # fallback
@@ -160,14 +168,14 @@ def fetch_gold_thai():
 def fetch_global_gold_and_fx():
     data = {"xauusd": None, "usdthb": None, "baht96": None}
     try:
-        # 1. Gold Spot (Free API - อาจไม่เสถียร)
+        # 1. Gold Spot
         try:
             r1 = requests.get("https://api.metals.live/v1/spot/gold", timeout=5)
             if r1.status_code == 200:
                 data["xauusd"] = float(r1.json()[0]["price"])
         except: pass
 
-        # 2. USD/THB (Free API - อาจติด Rate Limit)
+        # 2. USD/THB
         try:
             r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
             if r2.status_code == 200:
