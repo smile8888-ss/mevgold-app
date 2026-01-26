@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold (Final Tuned: Match HSH Price)
-# Priority: 1.HuaSengHeng (Association Row) -> 2.ThaiGold -> 3.Yahoo Calc (ลบ 250 บาท)
+# mevgold_pro_telegram.py — MeVGold (Final: HSH Sniper + Tuned Fallback)
+# Priority: 1.HuaSengHeng (Association Row) -> 2.ThaiGold -> 3.Yahoo Calc (Calibration -250)
 
 import os, json, re, csv
 from datetime import datetime
@@ -195,7 +195,7 @@ def fetch_huasengheng_sniper():
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     
-    # 1. เจาะหา "สมาคมฯ"
+    # เจาะหาคำว่า "สมาคมฯ"
     target = soup.find(string=re.compile("สมาคมฯ"))
     if not target:
         target = soup.find(string=re.compile("ฮั่วเซ่งเฮง"))
@@ -269,7 +269,6 @@ def calculate_yahoo_fallback():
     raw = (spot + premium) * thb * 0.4753
     
     # 🔧 จูนราคา: ลบออก 250 บาท (เพื่อให้ตรงกับ HSH 74,950)
-    # ถ้าอยากปรับเพิ่มลด ให้แก้ตัวเลขตรงนี้ครับ
     CALIBRATION_BAHT = 250 
     raw_tuned = raw - CALIBRATION_BAHT
     
@@ -279,7 +278,7 @@ def calculate_yahoo_fallback():
         "orn_buy": sell - 1200, "orn_sell": sell + 500,
         "times": None,
         "asof_time": datetime.now(TZ).strftime("%H:%M"),
-        "source_label": "คำนวณ (จูนราคา)"
+        "source_label": "คำนวณ (Yahoo/จูน)"
     }
 
 def fetch_manager():
@@ -446,8 +445,7 @@ if (is_change or is_recovery) and have_numbers_now:
             f"ขายออก: <b>{escape(f'{cur_sell:,.0f}')}</b> ({fmt_signed(tick_sell)}) {extra_txt}\n"
             f"เวลา {display_time} น."
         )
-        # send_telegram(msg)  # <-- เปิดบรรทัดนี้เมื่อมั่นใจแล้ว
-        pass
+        send_telegram(msg)
 
 # ===== 9) SAVE STATE =====
 new_state = dict(cur or {})
