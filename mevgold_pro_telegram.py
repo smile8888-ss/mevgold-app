@@ -1,7 +1,6 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (Original Structure + Fixed Engine)
-# Base code: Original user version
-# Engine Upgrade: Next.js JSON Extraction + Nam Chiang Fallback
-# Fixes: Added missing helper functions to prevent NameError
+# mevgold_pro_telegram.py — MeVGold 96.5% (Original UI + Next.js JSON Engine)
+# Base: User's Original Code (Beautiful UI & Logic)
+# Fix: Replaced fetch_assoc_raw with Next.js JSON extractor & Nam Chiang fallback
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -27,6 +26,7 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
+SOURCE_URL = "https://www.goldtraders.or.th/" # Official URL
 FETCH_TIMEOUT = 25
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
@@ -35,7 +35,7 @@ TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
 UP_EMOJI = "🟢⬆️"      
 DOWN_EMOJI = "🔻⬇️"     
 
-# ===== 2) STYLES (Original) =====
+# ===== 2) STYLES (Original User Version) =====
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700;800&display=swap');
@@ -165,12 +165,12 @@ def ensure_hist():
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
         for col in STD_COLUMNS:
-            if col not in df.columns: df[col] = "0"
+            if col not in df.columns:
+                df[col] = "0"
         df[STD_COLUMNS].to_csv(HIST_FILE, index=False, encoding="utf-8")
     except: pass
 
 def append_hist(row:dict):
-    # Logic Fix: Don't record None values
     if not row.get("sell_bar") or str(row.get("sell_bar")) in ["0","None","0.0"]: return
     ensure_hist()
     try:
@@ -183,7 +183,6 @@ def fmt_signed(n:int) -> str:
     if n < 0:  return f"-{abs(n)}"
     return "0"
 
-# ✅ Added Missing Function (Fixes NameError)
 def fmt_delta_for_badge(n:int) -> str:
     if n > 0:  return f"▲ +{n}"
     if n < 0:  return f"▼ -{abs(n)}"
@@ -199,22 +198,25 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (The Upgrade) =====
+# ===== 4) NEW ENGINE: Official Next.js Extraction + Fallback =====
 def fetch_assoc_raw():
-    # 1. Try Official Next.js JSON (Best Quality)
+    # 1. ลองเจาะ Official Site (goldtraders.or.th)
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "Accept": "text/html",
+            "Cache-Control": "no-cache"
         }
         r = requests.get("https://www.goldtraders.or.th/", headers=headers, timeout=15)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         
+        # เจาะหา Script ที่ซ่อน JSON ไว้
         script = soup.find("script", id="__NEXT_DATA__")
         if script:
             data = json.loads(script.string)
-            # Helper to find keys recursively
+            
+            # Helper หาค่าใน JSON
             def find_key(d, k_tgt):
                 if isinstance(d, dict):
                     for k,v in d.items():
@@ -226,41 +228,41 @@ def fetch_assoc_raw():
                         res = find_key(i, k_tgt)
                         if res: return res
             
-            def f(k):
-                val = find_key(data, k)
-                try: return float(str(val).replace(",",""))
+            def get_f(k):
+                v = find_key(data, k)
+                try: return float(str(v).replace(",",""))
                 except: return None
 
-            bs = f("blSell")
-            if bs:
+            bs = get_f("blSell")
+            if bs and bs > 0:
                 raw_d = str(find_key(data, "updateDate") or find_key(data, "timeUpdate") or "")
                 mt = re.search(r"(\d{1,2}:\d{2})", raw_d)
                 raw_r = str(find_key(data,"round") or find_key(data,"times") or "")
                 mr = re.search(r"(\d+)", raw_r)
                 
                 return {
-                    "bar_buy": f("blBuy"), "bar_sell": bs, "orn_buy": f("omBuy"), "orn_sell": f("omSell"),
+                    "bar_buy": get_f("blBuy"), "bar_sell": bs, 
+                    "orn_buy": get_f("omBuy"), "orn_sell": get_f("omSell"),
                     "times": int(mr.group(1)) if mr else None,
                     "asof_time": mt.group(1) if mt else datetime.now(TZ).strftime("%H:%M")
                 }
     except: pass
 
-    # 2. Fallback to Nam Chiang (Reliable Backup)
+    # 2. สำรอง: ห้างทองนำเชียง (Nam Chiang) - HTML ดิบ
     try:
         r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
         r.encoding = "cp874"
         soup = BeautifulSoup(r.text, "html.parser")
+        txt = soup.get_text()
         
         def ex(lbl):
-            # Regex find text pattern
-            m = re.search(rf"{lbl}.*?([\d,]+).*?([\d,]+)", soup.get_text())
+            m = re.search(rf"{lbl}.*?([\d,]+).*?([\d,]+)", txt)
             if m:
                 return float(m.group(1).replace(",","")), float(m.group(2).replace(",",""))
             return None, None
         
         bb, bs = ex("ทองคำแท่ง")
         ob, os = ex("ทองรูปพรรณ")
-        txt = soup.get_text()
         t_m = re.search(r"ครั้งที่\s?(\d+)", txt)
         tm_m = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
         
@@ -272,7 +274,8 @@ def fetch_assoc_raw():
             }
     except: pass
 
-    raise RuntimeError("All sources failed")
+    # ถ้าพังหมด
+    raise RuntimeError("All sources failed (Official & Backup)")
 
 def fetch_assoc_safe():
     status = {"source": "live", "message": ""}
@@ -282,10 +285,10 @@ def fetch_assoc_safe():
     except Exception as e:
         status["source"] = "cache"
         status["message"] = f"ดึงข้อมูลสดไม่ได้ ({e}) • แสดงราคาล่าสุดจากแคช"
-        cur = load_state() or {}
+        cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
         return cur, status
 
-# ===== 5) MAIN UI (Original) =====
+# ===== 5) MAIN UI (Original Layout) =====
 st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
@@ -310,7 +313,7 @@ prev_sell = float((prev or {}).get("bar_sell", cur_sell) or 0)
 tick_buy  = int(round(cur_buy  - prev_buy))
 tick_sell = int(round(cur_sell - prev_sell))
 
-# ----- Sticky badge logic -----
+# Sticky Badge
 prev_badge_times = prev.get("badge_times")
 prev_badge_delta = prev.get("badge_delta")
 
@@ -324,8 +327,7 @@ else:
     else:
         badge_delta_display = tick_sell
         badge_times_to_save = times_now
-if badge_delta_display is None:
-    badge_delta_display = 0
+if badge_delta_display is None: badge_delta_display = 0
 
 # ----- CARD -----
 st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -356,8 +358,7 @@ st.markdown(
 )
 
 def price_cell(v, tick):
-    if v is None:
-        return '<div class="cell right">–</div>'
+    if v is None: return '<div class="cell right">–</div>'
     cls = "up" if tick>0 else ("down" if tick<0 else "flat")
     return f'<div class="cell right"><span class="price {cls}">{v:,.2f}</span></div>'
 
@@ -390,26 +391,16 @@ st.markdown(
 st.markdown('</div>', unsafe_allow_html=True)
 st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
-# ===== 6) HISTORY & NOTIFICATION =====
+# ===== 6) HISTORY & TELEGRAM =====
 ensure_hist()
 
-# Initial seed
 def seed_today_if_missing(cur_like, now):
-    if not cur_like or not cur_like.get("bar_buy"): return
+    if not cur_like: return
     today = now.strftime("%Y-%m-%d")
-    try:
-        df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
+    try: df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
     except: return
-    
-    has_valid_today = False
-    if not df.empty and "date" in df.columns:
-        today_rows = df[df["date"] == today]
-        for _, r in today_rows.iterrows():
-            if r.get("sell_bar") and r.get("sell_bar") not in ["0", "None", "0.0"]:
-                has_valid_today = True
-                break
-    
-    if not has_valid_today:
+    has_today = (not df.empty) and ("date" in df.columns) and (df["date"] == today).any()
+    if not has_today:
         bb = cur_like.get("bar_buy");  bs = cur_like.get("bar_sell")
         ob = cur_like.get("orn_buy");  os = cur_like.get("orn_sell")
         if bs:
@@ -423,12 +414,11 @@ def seed_today_if_missing(cur_like, now):
                 "d_buy":  "0", "d_sell": "0",
             })
 
-seed_today_if_missing(cur, now)
+seed_today_if_missing(cur or prev, now)
 
+have_numbers_now  = (cur is not None) and (cur.get("bar_sell") is not None)
+have_numbers_prev = (prev is not None) and (prev.get("bar_sell") is not None)
 # Logic: Alert on Change OR Recovery from failure
-have_numbers_now = (cur is not None) and (cur.get("bar_sell") is not None)
-have_numbers_prev = (prev is not None) and (prev.get("bar_sell") is not None) and (prev.get("bar_sell") != 0)
-
 is_recovery = (not have_numbers_prev) and have_numbers_now
 is_change = have_numbers_now and have_numbers_prev and ((tick_buy != 0) or (tick_sell != 0))
 
@@ -447,10 +437,8 @@ if (is_change or is_recovery) and have_numbers_now:
     
     if TG_TOKEN and TG_CHAT:
         arrow = UP_EMOJI if tick_sell > 0 else DOWN_EMOJI
-        # If recovery, maybe no delta, just show connected
         extra_txt = arrow
-        if is_recovery: extra_txt = "✅(Connected)"
-        
+        if is_recovery: extra_txt = "⚠️(Connected)"
         msg = (
             "<b>สมาคมค้าทองคำ อัปเดตราคา 96.5%</b>\n"
             f"รับซื้อ: <b>{escape(f'{cur_buy:,.0f}')}</b> ({fmt_signed(tick_buy)})\n"
@@ -459,24 +447,26 @@ if (is_change or is_recovery) and have_numbers_now:
         )
         send_telegram(msg)
 
-# Save state
+# ===== 9) SAVE STATE =====
+new_state = dict(cur or {})
+new_state["bar_buy"]   = (cur or {}).get("bar_buy")
+new_state["bar_sell"]  = (cur or {}).get("bar_sell")
+new_state["orn_buy"]   = (cur or {}).get("orn_buy")
+new_state["orn_sell"]  = (cur or {}).get("orn_sell")
+new_state["times"]     = times_now
+new_state["asof_time"] = asof_time
+new_state["badge_times"] = badge_times_to_save
+new_state["badge_delta"] = badge_delta_display
+
 if fetch_status["source"] == "live" and have_numbers_now:
-    new_state = dict(cur or {})
-    new_state["badge_times"] = badge_times_to_save
-    new_state["badge_delta"] = badge_delta_display
     save_state(new_state)
 
-# History View
+# ===== 10) HISTORY VIEW =====
 with st.expander("📅 ประวัติวันนี้ (เฉพาะรอบที่มีการเปลี่ยนแปลง)", expanded=False):
     try:
         df = pd.read_csv(HIST_FILE, dtype=str, on_bad_lines="skip")
         today = now.strftime("%Y-%m-%d")
         df = df[df["date"] == today].copy()
-        
-        # Filter junk
-        df = df[df["sell_bar"] != "None"]
-        df = df[df["sell_bar"].notna()]
-        
         if df.empty:
             st.info("ยังไม่มีประวัติของวันนี้")
         else:
@@ -487,6 +477,10 @@ with st.expander("📅 ประวัติวันนี้ (เฉพาะ�
                     n = int(float(x))
                     return f"+{n}" if n>0 else (f"-{abs(n)}" if n<0 else "0")
                 except: return "0"
-            df["สถานะ"] = df["d_sell"].apply(sign_only)
-            st.dataframe(df[["time","buy_bar","sell_bar","สถานะ"]], hide_index=True)
-    except: pass
+            df["สถานะ (บาท)"] = df["d_sell"].apply(sign_only)
+            df = df.rename(columns={"date":"วันที่","time":"เวลา","buy_bar":"ราคาซื้อ","sell_bar":"ราคาขาย"})
+            st.dataframe(df[["วันที่","เวลา","ราคาซื้อ","ราคาขาย","สถานะ (บาท)"]], hide_index=True)
+    except:
+        st.info("ยังไม่มีประวัติ")
+
+st.markdown("</div>", unsafe_allow_html=True)
