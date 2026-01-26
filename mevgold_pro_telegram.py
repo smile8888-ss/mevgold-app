@@ -1,6 +1,6 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (The Avenger Edition: Multi-Source)
-# แก้ไขล่าสุด: เรียงลำดับการดึงข้อมูลใหม่ (Nam Chiang -> Official -> Sanook) เพื่อหนีการบล็อก
-# Notification Logic: คงเดิม 100% (เตือนเมื่อเปลี่ยน / เตือนเมื่อระบบฟื้นคืนชีพ)
+# mevgold_pro_telegram.py — MeVGold 96.5% (The Avenger Fixed)
+# แก้ไขล่าสุด: เพิ่มฟังก์ชัน fmt_delta_for_badge ที่ขาดหายไป + เรียงลำดับ Fetcher ใหม่
+# Notification Logic: คงเดิม 100%
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -26,7 +26,7 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
-FETCH_TIMEOUT = 15 # ลดเวลา timeout ต่อเว็บลงหน่อย จะได้วนครบไวๆ
+FETCH_TIMEOUT = 15 
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
@@ -58,17 +58,23 @@ html,body,.stApp{font-family:'Prompt',sans-serif;background:#0b0e12;color:#eceff
 
 # ===== 3) Logic Helpers =====
 TH_MONTH = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
-def th_now(dt): return f"{dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
+
+def th_now(dt): 
+    return f"{dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
+
 def load_state():
     try: return json.load(open(STATE_FILE,"r"))
     except: return {}
+
 def save_state(d):
     try: json.dump(d, open(STATE_FILE,"w"), ensure_ascii=False)
     except: pass
+
 def ensure_hist():
     cols = ["date","time","times","buy_bar","sell_bar","buy_orn","sell_orn","d_buy","d_sell"]
     if not os.path.exists(HIST_FILE):
         with open(HIST_FILE,"w",newline="",encoding="utf-8") as f: csv.writer(f).writerow(cols)
+
 def append_hist(row):
     if not row.get("sell_bar") or str(row.get("sell_bar")) in ["0","None","0.0"]: return
     ensure_hist()
@@ -76,33 +82,36 @@ def append_hist(row):
         with open(HIST_FILE,"a",newline="",encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=["date","time","times","buy_bar","sell_bar","buy_orn","sell_orn","d_buy","d_sell"]).writerow(row)
     except: pass
+
 def send_telegram(msg):
     if TG_TOKEN and TG_CHAT:
         try: requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={"chat_id":TG_CHAT,"text":msg,"parse_mode":"HTML"}, timeout=5)
         except: pass
 
+# ✅ Added Missing Helper Function
+def fmt_delta_for_badge(n):
+    if n > 0: return f"▲ +{n:,.0f}"
+    if n < 0: return f"▼ {n:,.0f}"
+    return "—"
+
 # ===== 4) THE AVENGER FETCHERS (3 Sources) =====
 
 # --- Source 1: Nam Chiang (ห้างทองนำเชียง) ---
-# ข้อดี: HTML บ้านๆ โหลดไว ไม่บล็อกบอท
 def fetch_namchiang():
     try:
         r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
-        r.encoding = "cp874" # เว็บนี้ใช้ภาษาไทยเก่า
+        r.encoding = "cp874" 
         soup = BeautifulSoup(r.text, "html.parser")
         
-        # ค้นหาตารางที่มีคำว่า "ทองคำแท่ง"
-        # โครงสร้าง: <td>ทองคำแท่ง 96.5%</td> ... <td>26,000</td> ... <td>26,100</td>
         def get_vals(label):
-            # หา td ที่มีคำค้นหา
             tag = soup.find("td", string=re.compile(label))
             if not tag: return None, None
-            # หา td ถัดไปเรื่อยๆ จนกว่าจะเจอตัวเลข
             nums = []
             curr = tag.find_next("td")
             while curr and len(nums) < 2:
                 txt = curr.get_text(strip=True).replace(",","")
-                if txt.isdigit() or (txt.replace(".","").isdigit() and float(txt) > 1000):
+                # หาตัวเลขที่มีค่า > 1000
+                if re.match(r"^\d+(\.\d+)?$", txt) and float(txt) > 1000:
                     nums.append(float(txt))
                 curr = curr.find_next("td")
             return (nums[0], nums[1]) if len(nums) >= 2 else (None, None)
@@ -110,7 +119,6 @@ def fetch_namchiang():
         bb, bs = get_vals("ทองคำแท่ง")
         ob, os = get_vals("ทองรูปพรรณ")
         
-        # หาเวลา
         txt_all = soup.get_text()
         m_time = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt_all)
         m_round = re.search(r"ครั้งที่\s?(\d+)", txt_all)
@@ -126,7 +134,6 @@ def fetch_namchiang():
     return None
 
 # --- Source 2: Official Association (Next.js JSON) ---
-# ข้อดี: ข้อมูลต้นทาง 100% (ถ้าไม่โดนบล็อก)
 def fetch_official():
     try:
         r = requests.get("https://www.goldtraders.or.th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
@@ -134,7 +141,6 @@ def fetch_official():
         script = soup.find("script", id="__NEXT_DATA__")
         if script:
             data = json.loads(script.string)
-            # (Logic เดิมที่เคยใช้ได้ผล)
             def find_key(d, k_tgt):
                 if isinstance(d, dict):
                     for k,v in d.items():
@@ -164,8 +170,7 @@ def fetch_official():
         print(f"Official Failed: {e}")
     return None
 
-# --- Source 3: Sanook Money (Fallback สุดท้าย) ---
-# ข้อดี: เว็บใหญ่ ไม่ล่มง่าย
+# --- Source 3: Sanook Money ---
 def fetch_sanook():
     try:
         r = requests.get("https://money.sanook.com/gold/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
@@ -176,14 +181,20 @@ def fetch_sanook():
             tag = soup.find(string=re.compile(lbl))
             if tag:
                 row = tag.find_parent("tr")
-                nums = [float(x.get_text().replace(",","")) for x in row.find_all("td") if re.match(r"[\d,]+", x.get_text()) and float(x.get_text().replace(",","")) > 1000]
-                if len(nums)>=2: return sorted(nums)[0], sorted(nums)[1] # buy, sell
+                # หาตัวเลขใน row
+                nums = []
+                for td in row.find_all("td"):
+                    txt = td.get_text().replace(",","").strip()
+                    m = re.search(r"(\d{4,6}(\.\d+)?)", txt)
+                    if m and float(m.group(1)) > 1000:
+                        nums.append(float(m.group(1)))
+                nums.sort()
+                if len(nums)>=2: return nums[0], nums[1] # buy, sell
             return None, None
 
         bb, bs = get_row("ทองคำแท่ง")
         ob, os = get_row("ทองรูปพรรณ")
         
-        # เวลาของ Sanook มักอยู่ใน h3 หรือ span
         txt = soup.get_text()
         mt = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
         mr = re.search(r"ครั้งที่\s?(\d+)", txt)
@@ -219,9 +230,8 @@ live_data, source_status = fetch_master()
 state = load_state()
 prev = state
 
-# ถ้าดึงสดไม่ได้ ให้ใช้ค่าเก่า (แต่แจ้งเตือน)
 if not live_data:
-    cur = state or {} # ถ้าไม่มี state เลย ก็ว่าง
+    cur = state or {} 
     msg_status = "⚠️ ดึงข้อมูลไม่ได้ (ทุกแหล่ง) • แสดงราคาล่าสุด"
 else:
     cur = live_data
@@ -242,11 +252,10 @@ diff = int(cs - ps) if ps > 0 else 0
 
 # Sticky Badge Logic
 badge_delta = prev.get("badge_delta", 0)
-if live_data: # ถ้าดึงสดได้ ค่อยอัปเดต Badge
-    if times_val != prev.get("times"): # รอบเปลี่ยน
+if live_data: 
+    if times_val != prev.get("times"): 
         badge_delta = diff
-    # ถ้ารอบเท่าเดิม ใช้ delta เดิม
-
+    
 # Display Header
 st.markdown(f'''
 <div class="card">
