@@ -228,41 +228,59 @@ def send_telegram(text:str):
 
 # ===== 6) FETCH (with graceful fallback) =====
 def fetch_assoc_raw():
-    r = requests.get(SOURCE_URL, headers={"User-Agent":"Mozilla/5.0 (MevGoldBot)"}, timeout=FETCH_TIMEOUT)
+    # Header เลียนแบบ Browser จริง (สำคัญมาก)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "th-TH,th;q=0.9"
+    }
+
+    r = requests.get(SOURCE_URL, headers=headers, timeout=FETCH_TIMEOUT)
     r.raise_for_status()
-    r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "lxml")  # เร็ว/ทน
+    
+    # ✅ FIX 1: แก้ปัญหาภาษาต่างดาว (Auto Detect Encoding)
+    r.encoding = r.apparent_encoding 
+    
+    soup = BeautifulSoup(r.text, "html.parser") # ใช้ html.parser แทน lxml
 
-    def num(sel):
-        t = soup.select_one(sel)
-        txt = t.get_text(strip=True) if t else ""
-        if not txt: return None
-        try: return float(txt.replace(",",""))
-        except: return None
+    # ✅ FIX 2: ฟังก์ชันหาจาก "คำค้นหา" แทน ID
+    def get_price_from_table(label_text, col_index):
+        found = soup.find(string=re.compile(label_text))
+        if not found: return None
+        row = found.find_parent("tr")
+        if not row: return None
+        cols = row.find_all("td")
+        if len(cols) > col_index:
+            text_val = cols[col_index].get_text(strip=True).replace(",", "")
+            try: return float(text_val)
+            except: return None
+        return None
 
+    # ดึงข้อมูล
     data = {
-        "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
-        "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
-        "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
-        "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
+        "bar_buy":  get_price_from_table("ทองคำแท่ง", 1),
+        "bar_sell": get_price_from_table("ทองคำแท่ง", 2),
+        "orn_buy":  get_price_from_table("ทองรูปพรรณ", 1),
+        "orn_sell": get_price_from_table("ทองรูปพรรณ", 2),
         "times":    None,
         "asof_time": None,
     }
 
-    ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
-    if ts:
-        ts_text = ts.get_text(strip=True)
+    # แกะเวลา
+    ts_node = soup.find(string=re.compile(r"เวลา\s?\d{1,2}:\d{2}"))
+    if ts_node:
+        ts_text = ts_node.strip()
         m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
-        if m:
-            try: data["times"] = int(m.group(1))
-            except: data["times"] = None
+        if m: data["times"] = int(m.group(1))
+        
         m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
-        if m2:
-            data["asof_time"] = m2.group(1)
+        if m2: data["asof_time"] = m2.group(1)
 
-    # ถ้าไม่พบ price เลย ถือว่าล้มเหลว
+    # ตรวจสอบความถูกต้อง
     if data["bar_buy"] is None and data["bar_sell"] is None:
-        raise RuntimeError("no_price_elements")
+        # Debug: ให้แสดง Error ถ้าหาไม่เจอ
+        raise RuntimeError(f"no_price_elements (Encoding: {r.encoding})")
+
     return data
 
 def fetch_assoc_safe():
