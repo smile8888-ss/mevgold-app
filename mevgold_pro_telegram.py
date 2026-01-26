@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold (Fixed: HSH Year-Time Bug)
-# Priority: 1.HuaSengHeng (Smart Filter) -> 2.ThaiGold.info -> 3.Yahoo Calc
+# mevgold_pro_telegram.py — MeVGold (Calibrated: -250 Baht)
+# Priority: 1.HuaSengHeng (Sniper) -> 2.ThaiGold.info -> 3.Yahoo Calc (Tuned)
 
 import os, json, re, csv
 from datetime import datetime
@@ -132,7 +132,6 @@ def th_now(dt: datetime) -> str:
     return f"{TH_DOW[dt.weekday()]} {dt.day} {TH_MONTH[dt.month-1]} {dt.year+543} • {dt.strftime('%H:%M')} น."
 
 def is_market_closed(now: datetime) -> bool:
-    # ตลาดปิดหลัง 17:30
     return (now.hour > 17) or (now.hour == 17 and now.minute >= 30)
 
 def load_state():
@@ -186,42 +185,9 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (Fixed Logic) =====
+# ===== 4) FETCH ENGINE (Sniper Mode + Calibrated Calc) =====
 
-def extract_numbers(soup_or_text, key_start, key_end=None):
-    # ปรับปรุง: ใช้ separator=" " เพื่อป้องกันตัวเลขติดกัน (เช่น ปี 2569 ติดกับเวลา)
-    if isinstance(soup_or_text, BeautifulSoup):
-        txt = soup_or_text.get_text(separator=" ", strip=True)
-    else:
-        txt = str(soup_or_text)
-
-    try:
-        start_idx = txt.find(key_start)
-        if start_idx == -1: return None, None
-        
-        sub_txt = txt[start_idx:]
-        if key_end:
-            end_idx = sub_txt.find(key_end)
-            if end_idx != -1: sub_txt = sub_txt[:end_idx]
-            
-        matches = re.findall(r"([\d,]+\.?\d*)", sub_txt)
-        valid_nums = []
-        for m in matches:
-            try:
-                val = float(m.replace(",",""))
-                # ✅ กรองเฉพาะราคาที่สมเหตุสมผล (40,000 - 90,000)
-                # ป้องกันเลขปี (2569) หรือเลขเวลาที่มาผสมกัน
-                if 40000 <= val <= 90000:
-                    valid_nums.append(val)
-            except: pass
-            
-        if len(valid_nums) >= 2:
-            return valid_nums[0], valid_nums[1] # รับซื้อ, ขายออก
-    except: pass
-    return None, None
-
-def fetch_huasengheng():
-    # Source 1: ฮั่วเซ่งเฮง
+def fetch_huasengheng_sniper():
     url = "https://www.huasengheng.com/"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
     
@@ -229,68 +195,94 @@ def fetch_huasengheng():
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     
-    # 1. ลองหาคำว่า "สมาคมฯ"
-    # ส่ง soup เข้าไปเลย เพื่อให้ฟังก์ชันจัดการ get_text แบบมีช่องว่าง
-    buy, sell = extract_numbers(soup, "สมาคมฯ", "อัปเดตล่าสุด")
-    label = "สมาคมฯ (via HSH)"
-    
-    if not buy:
-        # 2. ถ้าไม่เจอ เอาราคา "ฮั่วเซ่งเฮง"
-        buy, sell = extract_numbers(soup, "ฮั่วเซ่งเฮง", "สมาคมฯ")
-        label = "ฮั่วเซ่งเฮง"
+    # เจาะหาคำว่า "สมาคมฯ"
+    target = soup.find(string=re.compile("สมาคมฯ"))
+    if not target:
+        target = soup.find(string=re.compile("ฮั่วเซ่งเฮง"))
         
-    if buy and sell:
-        return {
-            "bar_buy": buy, "bar_sell": sell,
-            "orn_buy": buy - 1200, 
-            "orn_sell": sell + 500,
-            "times": None,
-            "asof_time": datetime.now(TZ).strftime("%H:%M"),
-            "source_label": label
-        }
-    raise ValueError("HSH parsing failed")
+    if target:
+        container = target.parent.parent.parent 
+        text_chunk = container.get_text(separator=" ", strip=True)
+        
+        matches = re.findall(r"([\d,]+\.?\d*)", text_chunk)
+        prices = []
+        for m in matches:
+            try:
+                val = float(m.replace(",",""))
+                # Filter กันเลขปี/เวลา (รับเฉพาะ 70,000 - 95,000)
+                if 70000 <= val <= 95000:
+                    prices.append(val)
+            except: pass
+            
+        if len(prices) >= 2:
+            return {
+                "bar_buy": prices[0], 
+                "bar_sell": prices[1],
+                "orn_buy": prices[0] - 1200, 
+                "orn_sell": prices[1] + 500,
+                "times": None,
+                "asof_time": datetime.now(TZ).strftime("%H:%M"),
+                "source_label": "สมาคมฯ (via HSH)"
+            }
+            
+    raise ValueError("Sniper failed")
 
 def fetch_thaigold_info():
-    # Source 2: ThaiGold.info
     url = "https://thaigold.info/"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
     soup = BeautifulSoup(r.text, "html.parser")
+    txt = soup.get_text(separator=" ")
     
-    buy, sell = extract_numbers(soup, "ทองคำแท่ง 96.5%")
-    
-    if buy and sell:
-        return {
-            "bar_buy": buy, "bar_sell": sell,
-            "orn_buy": (buy * 0.98),
-            "orn_sell": sell + 500,
-            "times": None,
-            "asof_time": datetime.now(TZ).strftime("%H:%M"),
-            "source_label": "ThaiGold.info"
-        }
-    raise ValueError("ThaiGold parsing failed")
+    idx = txt.find("ทองคำแท่ง 96.5%")
+    if idx != -1:
+        sub = txt[idx:]
+        matches = re.findall(r"([\d,]+\.?\d*)", sub)
+        prices = []
+        for m in matches:
+            try:
+                val = float(m.replace(",",""))
+                if 70000 <= val <= 95000:
+                    prices.append(val)
+            except: pass
+        
+        if len(prices) >= 2:
+             return {
+                "bar_buy": prices[0], "bar_sell": prices[1],
+                "orn_buy": (prices[0] * 0.98), "orn_sell": prices[1] + 500,
+                "times": None,
+                "asof_time": datetime.now(TZ).strftime("%H:%M"),
+                "source_label": "ThaiGold.info"
+            }
+    raise ValueError("ThaiGold failed")
 
 def calculate_yahoo_fallback():
-    # Source 3: Yahoo Finance
+    # Source 3: Yahoo Finance (Calibrated -250 Baht)
     tickers = yf.Tickers("GC=F THB=X")
     spot = tickers.tickers["GC=F"].history(period="1d")["Close"].iloc[-1]
     thb = tickers.tickers["THB=X"].history(period="1d")["Close"].iloc[-1]
     
     premium = 2.0
+    # คำนวณดิบ
     raw = (spot + premium) * thb * 0.4753
-    sell = 50 * round(raw / 50)
+    
+    # 🔧 จูนราคา: ลบออก 250 บาท (เพื่อให้เท่ากับสมาคมฯ ตามสถิติล่าสุด)
+    CALIBRATION_BAHT = 250 
+    raw_tuned = raw - CALIBRATION_BAHT
+    
+    sell = 50 * round(raw_tuned / 50)
     return {
         "bar_buy": sell - 100, "bar_sell": sell,
         "orn_buy": sell - 1200, "orn_sell": sell + 500,
         "times": None,
         "asof_time": datetime.now(TZ).strftime("%H:%M"),
-        "source_label": "คำนวณ (Yahoo)"
+        "source_label": "คำนวณ (Yahoo) [J-250]"
     }
 
 def fetch_manager():
-    # ลำดับการทำงาน: HSH -> ThaiGold -> Calc
+    # Priority Loop
     try:
-        return fetch_huasengheng(), {"source": "hsh", "message": ""}
+        return fetch_huasengheng_sniper(), {"source": "hsh", "message": ""}
     except: pass
     
     try:
@@ -298,7 +290,7 @@ def fetch_manager():
     except: pass
     
     try:
-        return calculate_yahoo_fallback(), {"source": "calc", "message": "ดึงข้อมูลไม่ได้ • ใช้ราคาคำนวณ"}
+        return calculate_yahoo_fallback(), {"source": "calc", "message": "ดึงข้อมูลไม่ได้ • ใช้ราคาคำนวณ (จูนแล้ว)"}
     except Exception as e:
         return None, {"source": "error", "message": str(e)}
 
