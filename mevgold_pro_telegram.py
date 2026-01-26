@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (The Avenger Fixed)
-# แก้ไขล่าสุด: เพิ่มฟังก์ชัน fmt_delta_for_badge ที่ขาดหายไป + เรียงลำดับ Fetcher ใหม่
+# mevgold_pro_telegram.py — MeVGold 96.5% (Official Penetration Fixed)
+# แก้ไขล่าสุด: ใส่ฟังก์ชันที่ขาดหายไป + เน้นเจาะเว็บสมาคมฯ (Official) เป็นหลัก
 # Notification Logic: คงเดิม 100%
 
 import os, json, re, csv, requests
@@ -26,7 +26,7 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
-FETCH_TIMEOUT = 15 
+FETCH_TIMEOUT = 20
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
@@ -76,6 +76,7 @@ def ensure_hist():
         with open(HIST_FILE,"w",newline="",encoding="utf-8") as f: csv.writer(f).writerow(cols)
 
 def append_hist(row):
+    # ป้องกันการบันทึกค่าว่าง
     if not row.get("sell_bar") or str(row.get("sell_bar")) in ["0","None","0.0"]: return
     ensure_hist()
     try:
@@ -88,18 +89,81 @@ def send_telegram(msg):
         try: requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={"chat_id":TG_CHAT,"text":msg,"parse_mode":"HTML"}, timeout=5)
         except: pass
 
-# ✅ Added Missing Helper Function
+# ✅ ฟังก์ชันที่เคยหายไป (เติมให้แล้วครับ)
 def fmt_delta_for_badge(n):
     if n > 0: return f"▲ +{n:,.0f}"
     if n < 0: return f"▼ {n:,.0f}"
     return "—"
 
-# ===== 4) THE AVENGER FETCHERS (3 Sources) =====
+# ===== 4) FETCHERS (Official First) =====
 
-# --- Source 1: Nam Chiang (ห้างทองนำเชียง) ---
+# --- 1. Official Website (GoldTraders.or.th) ---
+# ใช้วิธีแกะ __NEXT_DATA__ JSON ที่ซ่อนอยู่หลังบ้าน
+def fetch_official():
+    try:
+        # Header ต้องเนียนเหมือน Chrome
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "th-TH,th;q=0.9",
+            "Referer": "https://www.google.com/"
+        }
+        r = requests.get("https://www.goldtraders.or.th/", headers=headers, timeout=FETCH_TIMEOUT)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        
+        # เจาะหา Script ที่เก็บข้อมูล JSON
+        script = soup.find("script", id="__NEXT_DATA__")
+        if script:
+            data = json.loads(script.string)
+            
+            # ฟังก์ชันวนหา Key ที่ซ่อนอยู่ลึกๆ
+            def find_key(d, k_tgt):
+                if isinstance(d, dict):
+                    for k,v in d.items():
+                        if k.lower() == k_tgt.lower(): return v
+                        res = find_key(v, k_tgt)
+                        if res: return res
+                elif isinstance(d, list):
+                    for i in d:
+                        res = find_key(i, k_tgt)
+                        if res: return res
+                return None
+            
+            def get_val(k): 
+                v = find_key(data, k)
+                try: return float(str(v).replace(",",""))
+                except: return None
+                
+            # ดึงราคา (ชื่อตัวแปรของสมาคมคือ blSell, blBuy, omSell, omBuy)
+            bs = get_val("blSell")
+            bb = get_val("blBuy")
+            os = get_val("omSell")
+            ob = get_val("omBuy")
+            
+            if bs and bs > 0:
+                # ดึงเวลา
+                raw_d = str(find_key(data, "updateDate") or find_key(data, "timeUpdate") or "")
+                mt = re.search(r"(\d{1,2}:\d{2})", raw_d)
+                
+                # ดึงครั้งที่
+                raw_r = str(find_key(data, "round") or find_key(data, "times") or "")
+                mr = re.search(r"(\d+)", raw_r)
+                
+                return {
+                    "bar_buy": bb, "bar_sell": bs, "orn_buy": ob, "orn_sell": os,
+                    "times": int(mr.group(1)) if mr else None,
+                    "asof_time": mt.group(1) if mt else datetime.now(TZ).strftime("%H:%M")
+                }
+    except Exception as e:
+        print(f"Official Failed: {e}")
+    return None
+
+# --- 2. Nam Chiang (Backup) ---
+# เว็บ HTML ดั้งเดิมที่ดึงข้อมูลสมาคมมาแสดง
 def fetch_namchiang():
     try:
-        r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
+        r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
         r.encoding = "cp874" 
         soup = BeautifulSoup(r.text, "html.parser")
         
@@ -110,7 +174,6 @@ def fetch_namchiang():
             curr = tag.find_next("td")
             while curr and len(nums) < 2:
                 txt = curr.get_text(strip=True).replace(",","")
-                # หาตัวเลขที่มีค่า > 1000
                 if re.match(r"^\d+(\.\d+)?$", txt) and float(txt) > 1000:
                     nums.append(float(txt))
                 curr = curr.find_next("td")
@@ -129,110 +192,32 @@ def fetch_namchiang():
                 "times": int(m_round.group(1)) if m_round else None,
                 "asof_time": m_time.group(1) if m_time else datetime.now(TZ).strftime("%H:%M")
             }
-    except Exception as e:
-        print(f"NamChiang Failed: {e}")
+    except: pass
     return None
 
-# --- Source 2: Official Association (Next.js JSON) ---
-def fetch_official():
-    try:
-        r = requests.get("https://www.goldtraders.or.th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
-        soup = BeautifulSoup(r.text, "html.parser")
-        script = soup.find("script", id="__NEXT_DATA__")
-        if script:
-            data = json.loads(script.string)
-            def find_key(d, k_tgt):
-                if isinstance(d, dict):
-                    for k,v in d.items():
-                        if k.lower()==k_tgt.lower(): return v
-                        r = find_key(v, k_tgt)
-                        if r: return r
-                elif isinstance(d, list):
-                    for i in d:
-                        r = find_key(i, k_tgt)
-                        if r: return r
-            
-            def f(k): 
-                v = find_key(data, k)
-                return float(str(v).replace(",","")) if v else None
-                
-            bs = f("blSell")
-            if bs:
-                raw_d = str(find_key(data, "updateDate") or "")
-                mt = re.search(r"(\d{1,2}:\d{2})", raw_d)
-                mr = re.search(r"ครั้งที่\s?(\d+)", str(find_key(data,"round") or ""))
-                return {
-                    "bar_buy": f("blBuy"), "bar_sell": bs, "orn_buy": f("omBuy"), "orn_sell": f("omSell"),
-                    "times": int(mr.group(1)) if mr else None,
-                    "asof_time": mt.group(1) if mt else datetime.now(TZ).strftime("%H:%M")
-                }
-    except Exception as e:
-        print(f"Official Failed: {e}")
-    return None
-
-# --- Source 3: Sanook Money ---
-def fetch_sanook():
-    try:
-        r = requests.get("https://money.sanook.com/gold/", headers={"User-Agent":"Mozilla/5.0"}, timeout=FETCH_TIMEOUT)
-        r.encoding = "utf-8"
-        soup = BeautifulSoup(r.text, "html.parser")
-        
-        def get_row(lbl):
-            tag = soup.find(string=re.compile(lbl))
-            if tag:
-                row = tag.find_parent("tr")
-                # หาตัวเลขใน row
-                nums = []
-                for td in row.find_all("td"):
-                    txt = td.get_text().replace(",","").strip()
-                    m = re.search(r"(\d{4,6}(\.\d+)?)", txt)
-                    if m and float(m.group(1)) > 1000:
-                        nums.append(float(m.group(1)))
-                nums.sort()
-                if len(nums)>=2: return nums[0], nums[1] # buy, sell
-            return None, None
-
-        bb, bs = get_row("ทองคำแท่ง")
-        ob, os = get_row("ทองรูปพรรณ")
-        
-        txt = soup.get_text()
-        mt = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
-        mr = re.search(r"ครั้งที่\s?(\d+)", txt)
-        
-        if bs:
-            return {
-                "bar_buy": bb, "bar_sell": bs, "orn_buy": ob, "orn_sell": os,
-                "times": int(mr.group(1)) if mr else None,
-                "asof_time": mt.group(1) if mt else datetime.now(TZ).strftime("%H:%M")
-            }
-    except Exception as e:
-        print(f"Sanook Failed: {e}")
-    return None
-
-# ตัวจัดการหลัก: ลอง 1 -> 2 -> 3
+# ตัวจัดการหลัก: เจาะ Official ก่อน ถ้าไม่ได้ค่อยไป NamChiang
 def fetch_master():
-    res = fetch_namchiang()
-    if res: return res, "live (NamChiang)"
-    
+    # ลอง Official (Web สมาคม) ก่อน
     res = fetch_official()
-    if res: return res, "live (Official)"
+    if res: return res, "Official"
     
-    res = fetch_sanook()
-    if res: return res, "live (Sanook)"
+    # ถ้าพัง ให้ลอง Nam Chiang
+    res = fetch_namchiang()
+    if res: return res, "NamChiang"
     
-    return None, "fail"
+    return None, "Fail"
 
 # ===== 5) MAIN APP Logic =====
-st.markdown('<div class="brand">🏆 MeVGold</div><div class="sub">Thai Gold 96.5% • อัปเดตอัตโนมัติ</div>', unsafe_allow_html=True)
+st.markdown('<div class="brand">🏆 MeVGold</div><div class="sub">Thai Gold 96.5% • Official Data</div>', unsafe_allow_html=True)
 
-# Fetch
-live_data, source_status = fetch_master()
+# Fetch Data
+live_data, source_name = fetch_master()
 state = load_state()
 prev = state
 
 if not live_data:
     cur = state or {} 
-    msg_status = "⚠️ ดึงข้อมูลไม่ได้ (ทุกแหล่ง) • แสดงราคาล่าสุด"
+    msg_status = "⚠️ เชื่อมต่อสมาคมไม่ได้ (แสดงราคาล่าสุด)"
 else:
     cur = live_data
     msg_status = ""
@@ -250,10 +235,11 @@ pb, ps = prev.get("bar_buy") or 0, prev.get("bar_sell") or 0
 
 diff = int(cs - ps) if ps > 0 else 0
 
-# Sticky Badge Logic
+# Sticky Badge
 badge_delta = prev.get("badge_delta", 0)
 if live_data: 
-    if times_val != prev.get("times"): 
+    # อัปเดตป้ายเมื่อ ครั้งที่ เปลี่ยน หรือ ราคาเปลี่ยน
+    if times_val != prev.get("times") or cs != ps: 
         badge_delta = diff
     
 # Display Header
@@ -284,16 +270,15 @@ st.markdown(f'''
     <div class="cell"><span class="price flat">{ob:,.2f}</span></div>
     <div class="cell"><span class="price flat">{os:,.2f}</span></div>
   </div>
-  <div class="footer">เวลาสมาคม: {t_str} น.</div>
+  <div class="footer">เวลาสมาคม: {t_str} น. • แหล่งข้อมูล: {source_name}</div>
 </div>
 ''', unsafe_allow_html=True)
 
 # ===== 6) NOTIFICATION & HISTORY =====
 if live_data: # ทำงานเฉพาะเมื่อดึงข้อมูลสำเร็จ
     
-    # 1. เช็ค Recovery (ของเดิมพัง ของใหม่มา)
+    # Logic: แจ้งเตือนเมื่อราคาเปลี่ยน หรือ ระบบฟื้นตัวจาก Error
     is_recovery = (prev.get("bar_sell") in [0, None, "0"]) and (cs > 0)
-    # 2. เช็คราคาเปลี่ยน
     is_change = (cs != ps) and (ps > 0)
     
     if is_recovery or is_change:
@@ -312,7 +297,7 @@ if live_data: # ทำงานเฉพาะเมื่อดึงข้อ�
         # Telegram
         if TG_TOKEN:
             emo = UP_EMOJI if diff>0 else DOWN_EMOJI
-            if is_recovery: emo = "⚠️(ระบบฟื้น)"
+            if is_recovery: emo = "⚠️(Connected)"
             txt = f"<b>สมาคมค้าทองคำ 96.5%</b>\n" \
                   f"รับซื้อ: <b>{cb:,.0f}</b>\n" \
                   f"ขายออก: <b>{cs:,.0f}</b> ({diff:+}) {emo}\n" \
