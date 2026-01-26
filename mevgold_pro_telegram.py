@@ -210,82 +210,97 @@ def send_telegram(text:str):
 
 # ===== 6) FETCH (ULTRA ROBUST) =====
 def fetch_assoc_raw():
-    # เปลี่ยนมาดึงจาก Sanook Money (เว็บใหญ่, เสถียร, URL มาตรฐาน)
-    NEW_SOURCE_URL = "https://money.sanook.com/gold/"
+    # เปลี่ยนเป้าหมาย: ไม่เข้าหน้าแรก (ที่หมุนติ้วๆ) 
+    # แต่เข้าหน้า "ราคาทองคำประจำวัน" (ที่เป็นตาราง HTML โบราณ) แทน
+    HIST_URL = "https://www.goldtraders.or.th/DailyPrices.aspx"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Cache-Control": "no-cache"
     }
 
-    r = requests.get(NEW_SOURCE_URL, headers=headers, timeout=FETCH_TIMEOUT)
-    r.raise_for_status()
-    r.encoding = "utf-8"
-    soup = BeautifulSoup(r.text, "html.parser")
+    try:
+        r = requests.get(HIST_URL, headers=headers, timeout=FETCH_TIMEOUT)
+        r.raise_for_status()
+        # หน้าตารางนี้มักใช้ utf-8 แต่กันเหนียวไว้
+        r.encoding = r.apparent_encoding 
+        soup = BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        raise RuntimeError(f"Connect Error: {e}")
 
-    # ฟังก์ชันช่วยแกะตัวเลขจากแถวตาราง
-    def get_price_row(label):
-        # 1. หาคำว่า "ทองคำแท่ง" หรือ "ทองรูปพรรณ"
-        found = soup.find(string=re.compile(label))
-        if not found: return None, None
-        
-        # 2. ถอยหาแถว (tr)
-        row = found.find_parent("tr")
-        if not row: return None, None
-        
-        # 3. ดึงตัวเลขทั้งหมดในแถวนั้นออกมา
-        # วิธีนี้ฉลาดกว่า: ไม่สนช่องที่เท่าไหร่ แต่จะเอาตัวเลข 2 ตัวมาเรียงกัน
-        # ปกติ ทองคำแท่ง: รับซื้อ < ขายออก
-        nums = []
-        for col in row.find_all("td"):
-            txt = col.get_text(strip=True).replace(",", "")
-            # แกะเฉพาะตัวเลข (เผื่อมีวงเล็บราคาเปลี่ยนแปลง)
-            m = re.search(r"(\d{4,6}(\.\d+)?)", txt)
-            if m:
-                try: nums.append(float(m.group(1)))
-                except: pass
-        
-        # คัดกรองเฉพาะเลขราคา (ต้องมากกว่า 10,000 บาท กันพลาดไปหยิบเลข +50/-50)
-        prices = [n for n in nums if n > 10000]
-        prices.sort() # เรียงน้อยไปมาก [รับซื้อ, ขายออก]
-        
-        if len(prices) >= 2:
-            return prices[0], prices[1] # (รับซื้อ, ขายออก)
-        return None, None
+    # ค้นหาตาราง (Table)
+    # ปกติหน้า History จะมีตารางใหญ่ๆ อยู่ตรงกลาง
+    # เราจะหาตารางที่มีคำว่า "เวลา" หรือ "ครั้งที่" อยู่ในหัวตาราง
+    target_table = None
+    for table in soup.find_all("table"):
+        if "ครั้งที่" in table.get_text() and "เวลา" in table.get_text():
+            target_table = table
+            break
+    
+    if not target_table:
+         # เผื่อหาตารางไม่เจอ ลองหา row โดยตรง
+         pass
 
-    # ดึงข้อมูล
-    bar_buy, bar_sell = get_price_row("ทองคำแท่ง")
-    orn_buy, orn_sell = get_price_row("ทองรูปพรรณ")
+    # ฟังก์ชันช่วยดึงตัวเลขจาก Cell
+    def parse_num(txt):
+        if not txt: return None
+        clean = txt.replace(",", "").strip()
+        try: return float(clean)
+        except: return None
 
+    # เริ่มแกะข้อมูลจาก "แถวแรก" ที่ไม่ใช่หัวตาราง (ข้อมูลล่าสุด)
+    # โครงสร้างปกติ: วันที่ | เวลา | ครั้งที่ | แท่งรับซื้อ | แท่งขายออก | รูปพรรณรับซื้อ | รูปพรรณขายออก ...
     data = {
-        "bar_buy":  bar_buy,
-        "bar_sell": bar_sell,
-        "orn_buy":  orn_buy,
-        "orn_sell": orn_sell,
-        "times":    None,
-        "asof_time": None,
+        "bar_buy": None, "bar_sell": None, 
+        "orn_buy": None, "orn_sell": None, 
+        "times": None, "asof_time": None
     }
 
-    # แกะเวลา: หาคำว่า "เวลา ... น." ในหน้าเว็บ
-    # Sanook มักเขียนว่า "ประจำวันที่ ... เวลา ... น."
-    time_text_node = soup.find(string=re.compile(r"เวลา\s?\d{1,2}:\d{2}"))
-    if time_text_node:
-        txt = time_text_node.strip()
-        # แกะครั้งที่
-        m1 = re.search(r"ครั้งที่\s?(\d+)", txt)
-        if m1: data["times"] = int(m1.group(1))
-        # แกะเวลา
-        m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", txt)
-        if m2: data["asof_time"] = m2.group(1)
+    found_row = False
+    
+    # วนหาแถวข้อมูล (ข้ามแถวหัวข้อ)
+    # เราจะหาแถวที่มี "ตัวเลขราคา" ครบๆ
+    rows = soup.find_all("tr")
+    for row in rows:
+        cols = row.find_all("td")
+        # ต้องมีมากกว่า 5 คอลัมน์ (วันที่, เวลา, ครั้งที่, ราคา4ตัว...)
+        if len(cols) >= 8:
+            # ลองเช็คว่าเป็นแถวข้อมูลจริงไหม (คอลัมน์ 3 ต้องเป็นราคา)
+            test_price = parse_num(cols[3].get_text(strip=True))
+            if test_price and test_price > 10000:
+                # เจอแล้ว! นี่คือแถวข้อมูลล่าสุด (เพราะอยู่บนสุด)
+                
+                # [0]=วันที่, [1]=เวลา, [2]=ครั้งที่
+                # [3]=แท่งรับซื้อ, [4]=แท่งขายออก
+                # [5]=รูปพรรณรับซื้อ, [6]=รูปพรรณขายออก
+                
+                # ดึงเวลา
+                raw_time = cols[1].get_text(strip=True) # เช่น 09:30
+                data["asof_time"] = raw_time
+                
+                # ดึงครั้งที่
+                raw_times = cols[2].get_text(strip=True)
+                try: data["times"] = int(raw_times)
+                except: data["times"] = None
 
-    # Fallback: ถ้าหาเวลาไม่เจอ ให้ใช้เวลาปัจจุบัน (เพื่อให้แอปไม่พัง)
+                # ดึงราคา
+                data["bar_buy"]  = parse_num(cols[3].get_text(strip=True))
+                data["bar_sell"] = parse_num(cols[4].get_text(strip=True))
+                data["orn_buy"]  = parse_num(cols[5].get_text(strip=True))
+                data["orn_sell"] = parse_num(cols[6].get_text(strip=True))
+                
+                found_row = True
+                break # เจอแถวบนสุด (ล่าสุด) แล้วหยุดเลย
+
+    if not found_row or data["bar_sell"] is None:
+        # Debug: ถ้าหาไม่เจอจริงๆ
+        st.error("❌ หาตารางราคาในหน้า DailyPrices ไม่เจอ")
+        raise RuntimeError("no_price_elements (Source: GTA History Page)")
+    
+    # Fallback เวลา ถ้าในตารางไม่มี
     if data["asof_time"] is None:
-         data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
-
-    # ตรวจสอบความถูกต้อง
-    if data["bar_buy"] is None:
-        raise RuntimeError("no_price_elements (Source: Sanook Money)")
+        data["asof_time"] = datetime.now(TZ).strftime("%H:%M")
 
     return data
 
