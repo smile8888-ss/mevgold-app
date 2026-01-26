@@ -1,5 +1,5 @@
-# mevgold_pro_telegram.py — MeVGold (Calibrated: -250 Baht)
-# Priority: 1.HuaSengHeng (Sniper) -> 2.ThaiGold.info -> 3.Yahoo Calc (Tuned)
+# mevgold_pro_telegram.py — MeVGold (Final Tuned: Match HSH Price)
+# Priority: 1.HuaSengHeng (Association Row) -> 2.ThaiGold -> 3.Yahoo Calc (ลบ 250 บาท)
 
 import os, json, re, csv
 from datetime import datetime
@@ -185,7 +185,7 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) FETCH ENGINE (Sniper Mode + Calibrated Calc) =====
+# ===== 4) FETCH ENGINE (HSH Sniper + Tuned Calc) =====
 
 def fetch_huasengheng_sniper():
     url = "https://www.huasengheng.com/"
@@ -195,12 +195,13 @@ def fetch_huasengheng_sniper():
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     
-    # เจาะหาคำว่า "สมาคมฯ"
+    # 1. เจาะหา "สมาคมฯ"
     target = soup.find(string=re.compile("สมาคมฯ"))
     if not target:
         target = soup.find(string=re.compile("ฮั่วเซ่งเฮง"))
         
     if target:
+        # ถอยออกมาหา Container ใหญ่ แล้วแยกคำด้วยช่องว่าง (แก้บั๊กเลขติดกัน)
         container = target.parent.parent.parent 
         text_chunk = container.get_text(separator=" ", strip=True)
         
@@ -209,7 +210,8 @@ def fetch_huasengheng_sniper():
         for m in matches:
             try:
                 val = float(m.replace(",",""))
-                # Filter กันเลขปี/เวลา (รับเฉพาะ 70,000 - 95,000)
+                # ✅ Filter: รับเฉพาะช่วง 70,000 - 95,000 เท่านั้น
+                # ตัดเลขปี 2569 หรือ เวลาทิ้ง
                 if 70000 <= val <= 95000:
                     prices.append(val)
             except: pass
@@ -263,10 +265,11 @@ def calculate_yahoo_fallback():
     thb = tickers.tickers["THB=X"].history(period="1d")["Close"].iloc[-1]
     
     premium = 2.0
-    # คำนวณดิบ
+    # คำนวณราคาสด
     raw = (spot + premium) * thb * 0.4753
     
-    # 🔧 จูนราคา: ลบออก 250 บาท (เพื่อให้เท่ากับสมาคมฯ ตามสถิติล่าสุด)
+    # 🔧 จูนราคา: ลบออก 250 บาท (เพื่อให้ตรงกับ HSH 74,950)
+    # ถ้าอยากปรับเพิ่มลด ให้แก้ตัวเลขตรงนี้ครับ
     CALIBRATION_BAHT = 250 
     raw_tuned = raw - CALIBRATION_BAHT
     
@@ -276,7 +279,7 @@ def calculate_yahoo_fallback():
         "orn_buy": sell - 1200, "orn_sell": sell + 500,
         "times": None,
         "asof_time": datetime.now(TZ).strftime("%H:%M"),
-        "source_label": "คำนวณ (Yahoo) [J-250]"
+        "source_label": "คำนวณ (จูนราคา)"
     }
 
 def fetch_manager():
@@ -290,7 +293,7 @@ def fetch_manager():
     except: pass
     
     try:
-        return calculate_yahoo_fallback(), {"source": "calc", "message": "ดึงข้อมูลไม่ได้ • ใช้ราคาคำนวณ (จูนแล้ว)"}
+        return calculate_yahoo_fallback(), {"source": "calc", "message": "ดึงข้อมูลไม่ได้ • ใช้ราคาคำนวณ"}
     except Exception as e:
         return None, {"source": "error", "message": str(e)}
 
@@ -443,7 +446,8 @@ if (is_change or is_recovery) and have_numbers_now:
             f"ขายออก: <b>{escape(f'{cur_sell:,.0f}')}</b> ({fmt_signed(tick_sell)}) {extra_txt}\n"
             f"เวลา {display_time} น."
         )
-        send_telegram(msg)
+        # send_telegram(msg)  # <-- เปิดบรรทัดนี้เมื่อมั่นใจแล้ว
+        pass
 
 # ===== 9) SAVE STATE =====
 new_state = dict(cur or {})
