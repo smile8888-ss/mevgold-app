@@ -1,6 +1,6 @@
-# mevgold_pro_telegram.py — MeVGold 96.5% (Original UI + Next.js JSON Engine)
-# Base: User's Original Code (Beautiful UI & Logic)
-# Fix: Replaced fetch_assoc_raw with Next.js JSON extractor & Nam Chiang fallback
+# mevgold_pro_telegram.py — MeVGold 96.5% (Fixed: Anti-Bot Headers + Dual Source)
+# 1. Official Site (with Chrome Headers)
+# 2. Nam Chiang (Fallback)
 
 import os, json, re, csv, requests
 from datetime import datetime
@@ -26,8 +26,9 @@ st.markdown("""
 TZ = ZoneInfo("Asia/Bangkok")
 STATE_FILE = "last_gold.json"
 HIST_FILE  = "history_today.csv"
-SOURCE_URL = "https://www.goldtraders.or.th/" # Official URL
-FETCH_TIMEOUT = 25
+# URL หลักของสมาคม
+SOURCE_URL = "https://www.goldtraders.or.th/default.aspx" 
+FETCH_TIMEOUT = 20
 
 TG_TOKEN = str(st.secrets.get("TELEGRAM_BOT_TOKEN", "") or "")
 TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
@@ -35,7 +36,7 @@ TG_CHAT  = str(st.secrets.get("TELEGRAM_CHAT_ID", "") or "")
 UP_EMOJI = "🟢⬆️"      
 DOWN_EMOJI = "🔻⬇️"     
 
-# ===== 2) STYLES (Original User Version) =====
+# ===== 2) STYLES =====
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700;800&display=swap');
@@ -49,7 +50,6 @@ html, body, .stApp{
   color:#eceff4;
 }
 .wrap{max-width:920px;margin:0 auto;padding:16px 12px 24px}
-
 .brand{display:flex;gap:8px;align-items:center;justify-content:center;margin:6px 0 0}
 .brand b{
   font-size:clamp(22px,7vw,36px);
@@ -59,7 +59,6 @@ html, body, .stApp{
 }
 .sub{color:#c9ced6;text-align:center;margin:.25rem 0 .5rem;font-size:clamp(11px,3.2vw,14px)}
 .note{color:#aab1bb;text-align:center;margin-bottom:.25rem;font-size:clamp(10px,3vw,12px)}
-
 .card{
   position:relative;border-radius:var(--radius-lg);border:1px solid var(--line);
   background:
@@ -68,8 +67,6 @@ html, body, .stApp{
   box-shadow:0 14px 36px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04) inset;
   overflow:hidden;
 }
-
-/* header – mobile */
 .header{
   display:flex; flex-direction:row; align-items:center; justify-content:space-between;
   flex-wrap:wrap; gap:10px;
@@ -78,7 +75,6 @@ html, body, .stApp{
 }
 .header .left{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
 .status{margin-left:auto; display:flex; align-items:center}
-
 .badge{
   display:inline-flex; align-items:center; gap:8px; font-weight:900;
   padding:6px 10px; border-radius:999px; font-size:clamp(13px,4vw,16px); line-height:1;
@@ -87,13 +83,9 @@ html, body, .stApp{
   border:1px solid rgba(248,224,138,.6);
   box-shadow:0 10px 28px rgba(240,193,89,.22), 0 0 0 1px rgba(255,255,255,.06) inset;
 }
-
-/* table */
 .table{padding:10px}
 .row{
-  display:grid;
-  grid-template-columns: 1.1fr 1fr 1fr;
-  gap:var(--gap); margin-bottom:var(--gap);
+  display:grid; grid-template-columns: 1.1fr 1fr 1fr; gap:var(--gap); margin-bottom:var(--gap);
 }
 .cell{
   background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
@@ -108,16 +100,14 @@ html, body, .stApp{
 }
 .cell.right{text-align:right}
 .tag{font-size:clamp(11px,3.3vw,13px);color:#cbd5e1}
-
 .price{
   font-size:clamp(28px,8vw,44px); font-weight:900;
   background:linear-gradient(92deg,#F8E08A,#F0C159,#E3AC3A);
   -webkit-background-clip:text;color:transparent;text-shadow:0 1px 0 rgba(0,0,0,.35);
 }
-.price.up   { color:#16a34a; -webkit-text-fill-color:#16a34a; background:none; }
+.price.up    { color:#16a34a; -webkit-text-fill-color:#16a34a; background:none; }
 .price.down { color:#ef4444; -webkit-text-fill-color:#ef4444; background:none; }
 .price.flat { color:#cbd5e1; -webkit-text-fill-color:#cbd5e1; background:none; }
-
 .footer{
   display:flex;flex-direction:column;gap:6px;align-items:flex-start;
   padding:10px 12px 12px;border-top:1px solid var(--line);color:#d1d5db;
@@ -125,8 +115,6 @@ html, body, .stApp{
 }
 .footer b{font-weight:900}
 hr.sep{border:none;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.1),transparent);margin:12px 0}
-
-/* desktop */
 @media (min-width: 768px){
   .wrap{padding:18px 14px 28px}
   .header{flex-direction:row; align-items:center; justify-content:space-between; min-height:64px}
@@ -198,57 +186,54 @@ def send_telegram(text:str):
         )
     except: pass
 
-# ===== 4) NEW ENGINE: Official Next.js Extraction + Fallback =====
+# ===== 4) FETCH ENGINE (Fixed) =====
 def fetch_assoc_raw():
-    # 1. ลองเจาะ Official Site (goldtraders.or.th)
+    # 1. Official Site (สมาคมฯ) - ใช้ Headers ปลอมตัวเป็น Chrome
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html",
-            "Cache-Control": "no-cache"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Referer": "https://www.google.com/",
+            "Accept-Language": "th-TH,th;q=0.9,en-US;q=0.8,en;q=0.7"
         }
-        r = requests.get("https://www.goldtraders.or.th/", headers=headers, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
         
-        # เจาะหา Script ที่ซ่อน JSON ไว้
-        script = soup.find("script", id="__NEXT_DATA__")
-        if script:
-            data = json.loads(script.string)
-            
-            # Helper หาค่าใน JSON
-            def find_key(d, k_tgt):
-                if isinstance(d, dict):
-                    for k,v in d.items():
-                        if k.lower() == k_tgt.lower(): return v
-                        res = find_key(v, k_tgt)
-                        if res: return res
-                elif isinstance(d, list):
-                    for i in d:
-                        res = find_key(i, k_tgt)
-                        if res: return res
-            
-            def get_f(k):
-                v = find_key(data, k)
-                try: return float(str(v).replace(",",""))
-                except: return None
+        r = requests.get(SOURCE_URL, headers=headers, timeout=15)
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        soup = BeautifulSoup(r.text, "lxml") # ใช้ lxml ถ้ามี ถ้าไม่มีเปลี่ยนเป็น html.parser
 
-            bs = get_f("blSell")
-            if bs and bs > 0:
-                raw_d = str(find_key(data, "updateDate") or find_key(data, "timeUpdate") or "")
-                mt = re.search(r"(\d{1,2}:\d{2})", raw_d)
-                raw_r = str(find_key(data,"round") or find_key(data,"times") or "")
-                mr = re.search(r"(\d+)", raw_r)
-                
-                return {
-                    "bar_buy": get_f("blBuy"), "bar_sell": bs, 
-                    "orn_buy": get_f("omBuy"), "orn_sell": get_f("omSell"),
-                    "times": int(mr.group(1)) if mr else None,
-                    "asof_time": mt.group(1) if mt else datetime.now(TZ).strftime("%H:%M")
-                }
-    except: pass
+        def num(sel):
+            t = soup.select_one(sel)
+            txt = t.get_text(strip=True) if t else ""
+            if not txt: return None
+            try: return float(txt.replace(",",""))
+            except: return None
 
-    # 2. สำรอง: ห้างทองนำเชียง (Nam Chiang) - HTML ดิบ
+        # ID มาตรฐานของสมาคม (ASP.NET WebForms)
+        data = {
+            "bar_buy":  num("#DetailPlace_uc_goldprices1_lblBLBuy"),
+            "bar_sell": num("#DetailPlace_uc_goldprices1_lblBLSell"),
+            "orn_buy":  num("#DetailPlace_uc_goldprices1_lblOMBuy"),
+            "orn_sell": num("#DetailPlace_uc_goldprices1_lblOMSell"),
+            "times":    None,
+            "asof_time": None,
+        }
+
+        ts = soup.select_one("#DetailPlace_uc_goldprices1_lblAsTime")
+        if ts:
+            ts_text = ts.get_text(strip=True)
+            m = re.search(r"ครั้งที่\s?(\d+)", ts_text)
+            if m: data["times"] = int(m.group(1))
+            m2 = re.search(r"เวลา\s?(\d{1,2}:\d{2})", ts_text)
+            if m2: data["asof_time"] = m2.group(1)
+
+        if data["bar_buy"] and data["bar_sell"]:
+            return data
+
+    except Exception:
+        pass # ถ้าสมาคมล่ม ให้ข้ามไป Nam Chiang
+
+    # 2. Backup: ห้างทองนำเชียง (Nam Chiang)
     try:
         r = requests.get("http://www.namchiang.com/th/", headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
         r.encoding = "cp874"
@@ -288,7 +273,7 @@ def fetch_assoc_safe():
         cur = load_state() or {"bar_buy": None, "bar_sell": None, "orn_buy": None, "orn_sell": None, "times": None, "asof_time": None}
         return cur, status
 
-# ===== 5) MAIN UI (Original Layout) =====
+# ===== 5) MAIN UI =====
 st.markdown('<div class="brand">🏆 <b>MeVGold</b></div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Thai Gold 96.5% • จากสมาคมค้าทองคำ</div>', unsafe_allow_html=True)
 st.markdown('<div class="note">อัปเดตอัตโนมัติทุก 1 นาที (โหลดทั้งหน้า)</div>', unsafe_allow_html=True)
